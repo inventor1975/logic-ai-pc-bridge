@@ -46,10 +46,22 @@ def run():
     r = json.loads((rem / "r1.json").read_text())
     ok &= r["tries"] == 1 and r["last_msg_id"] is not None and not (sent / "r1.json").exists()
 
-    # 2. реакция -> замолкает
+    # 2a. реакция ЧУЖАКА (approver=false) НЕ гасит — иначе посторонний в группе
+    #     молча снимал бы эскалацию, которую принципал не видел.
     (rem / "r1.json").write_text(json.dumps({**r, "at": past}, ensure_ascii=False))
     (tmp / "reactions.jsonl").write_text(
-        json.dumps({"chat_id": 111, "message_id": r["last_msg_id"], "emoji": ["👍"]}) + "\n",
+        json.dumps({"chat_id": 111, "message_id": r["last_msg_id"],
+                    "emoji": ["👍"], "approver": False}) + "\n",
+        encoding="utf-8")
+    n = len(log); due()
+    ok &= len(log) > n and not (sent / "r1.json").exists()   # шлёт снова, не гаснет
+
+    # 2b. реакция ПРИНЦИПАЛА (approver=true) -> замолкает
+    r = json.loads((rem / "r1.json").read_text())
+    (rem / "r1.json").write_text(json.dumps({**r, "at": past}, ensure_ascii=False))
+    (tmp / "reactions.jsonl").write_text(
+        json.dumps({"chat_id": 111, "message_id": r["last_msg_id"],
+                    "emoji": ["👍"], "approver": True}) + "\n",
         encoding="utf-8")
     n = len(log); due()
     ok &= len(log) == n and (sent / "r1.json").exists()

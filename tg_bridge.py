@@ -32,6 +32,7 @@ import subprocess
 import threading
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -132,8 +133,15 @@ def now() -> str:
 
 
 def log_line(rec: dict[str, Any]) -> None:
-    with C.LOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    # ONE LOCK ON THE LOG (_LOG_LOCK, declared next to _WHISPER_LOCK). log_line
+    # is called from the main loop AND the voice/file worker threads. O_APPEND
+    # makes each write() syscall atomic, but one long line (a big context or a
+    # transcript) splits into several write()s and can interleave with another
+    # thread's line — a corrupt JSONL line that readers silently skip.
+    line = json.dumps(rec, ensure_ascii=False) + "\n"
+    with _LOG_LOCK:
+        with C.LOG.open("a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def announce(chat_id: int) -> None:
@@ -249,6 +257,8 @@ _SEEN_UNKNOWN: set[int] = set()
 
 _WHISPER_LOCK = threading.Lock()
 _WHISPER = [None]
+# Serialises appends to the chat log from the main loop and worker threads.
+_LOG_LOCK = threading.Lock()
 
 
 def rule_for(chat_id: int, path: Path,
@@ -294,10 +304,18 @@ def rule_for(chat_id: int, path: Path,
         exp = r.get("expires_at")
         if exp:
             try:
-                if datetime.fromisoformat(exp) <= nowts:
+                dt = datetime.fromisoformat(exp)
+                # A NAIVE DATE MUST NOT CRASH THE WHOLE SEND LOOP. A tz-less
+                # expiry (`--until 2026-12-01T00:00:00`) compared with aware
+                # nowts raises TypeError — not ValueError, which was the only
+                # one caught — and the exception left flush_outbox, aborting
+                # EVERY send each pass. Normalise to UTC.
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt <= nowts:
                     continue
-            except ValueError:
-                continue        # нечитаемый срок — НЕ в пользу отправки
+            except (ValueError, TypeError):
+                continue        # unreadable expiry — NOT in favour of sending
 
         for pth in (r.get("paths") or []):
             try:
@@ -526,6 +544,20 @@ def whisper_ready() -> str:
         return f"{type(e).__name__}: {e}"
 
 
+def _guarded(fn, *args) -> None:
+    """Run a worker-thread body so a crash SHOUTS instead of dying in silence.
+
+    voice_job/file_job run in daemon threads off the polling loop. A daemon
+    thread that raises just disappears — the message it was carrying is lost
+    with no trace, and the sender is left on 🤔 forever. This wrapper catches
+    everything and prints a full traceback, so a silent loss becomes a loud one.
+    """
+    try:
+        fn(*args)
+    except Exception:
+        print(f"[{now()}] JOB CRASHED ({fn.__name__}):\n{traceback.format_exc()}")
+
+
 def voice_job(chat_id: int, msg: dict[str, Any], rec: dict[str, Any],
               media: dict[str, Any]) -> None:
     """Runs off the polling loop: downloading and transcribing take seconds.
@@ -546,6 +578,21 @@ def voice_job(chat_id: int, msg: dict[str, Any], rec: dict[str, Any],
           f"{time.monotonic() - t0:.1f}s to place {C.HEARD_EMOJI}")
     dest = C.VOICE / f"{msg['message_id']}-{chat_id}.ogg"
     if not fetch_file(media["file_id"], dest):
+        # NOT SILENTLY. A failed download used to be a bare return: no log
+        # line, no word to the sender — they saw 🤔 and then forever silence.
+        # That is exactly the "stored-but-not" class. Say the same thing as a
+        # failed transcription: the audio did not arrive, please send it again.
+        rec["text"] = ""
+        rec["voice_download_failed"] = True
+        log_line(rec)
+        C.OUTBOX.joinpath(f"novoice-{msg['message_id']}-{chat_id}.json").write_text(
+            json.dumps({"chat_id": chat_id, "reply_to": msg["message_id"],
+                        "text": "I received your voice message but could not "
+                                "download it (a network glitch or the file was "
+                                "unavailable). Please send it again."},
+                       ensure_ascii=False), encoding="utf-8")
+        print(f"[{now()}] voice: download FAILED {msg['message_id']}/{chat_id} "
+              f"— sender told, no request created")
         return
     text = transcribe(dest)
     rec["voice"] = str(dest)
@@ -621,7 +668,11 @@ def accept(chat_id: int, msg: dict[str, Any], rec: dict[str, Any], text: str,
     # order; a guest's request is data, and acting on it needs a mark. Without
     # this field the assistant would tell them apart by name — and people
     # choose their own display names.
-    rec["from_principal"] = frm.get("id") == pol["principal"]
+    # `is not None` FIRST, or a chat with no principal set (default None) makes
+    # a senderless message (channel_post, anonymous group admin → frm.get("id")
+    # is None) read as None == None → True, and its words would be trusted as
+    # the principal's. Absence of a sender is never the principal.
+    rec["from_principal"] = frm.get("id") is not None and frm.get("id") == pol["principal"]
     rec["outward_gate"] = pol["outward_gate"]
     # THE CHAT'S SUBJECT GOES INTO EVERY REQUEST rather than being recalled.
     # A machine cannot check the boundary of a topic — that is about meaning.
@@ -826,7 +877,7 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
     # the polling loop must not wait for it.
     media = msg.get("voice") or msg.get("video_note") or msg.get("audio")
     if media and not text:
-        threading.Thread(target=voice_job, args=(chat_id, msg, rec, media),
+        threading.Thread(target=_guarded, args=(voice_job, chat_id, msg, rec, media),
                          daemon=True).start()
         return
 
@@ -836,7 +887,7 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
     # text и caption; всё остальное для него не существовало.
     att = attachments_of(msg)
     if att:
-        threading.Thread(target=file_job, args=(chat_id, msg, rec, att, text),
+        threading.Thread(target=_guarded, args=(file_job, chat_id, msg, rec, att, text),
                          daemon=True).start()
         return
 
@@ -1081,11 +1132,18 @@ def decide(chat_id: int, message_id: int | None, emoji: list[str],
 
 
 def _seen(chat_id: int, message_id: int) -> bool:
-    """Did the principal REACT to this exact message? Any emoji counts.
+    """Did the PRINCIPAL react to this exact message? Any emoji counts.
 
     To place a reaction you must have opened the message, so a reaction — 👍
     or anything else — proves it was seen. That is the whole ack signal an
     escalating reminder waits for.
+
+    THE REACTOR MUST BE AN APPROVER, not just anyone. In a group the reminder
+    hangs in, an outsider could put any emoji on the bot's message and silently
+    retire an escalation the principal never saw. So we require `approver`,
+    which handle_reaction already stamps on every record (uid in approvers).
+    This also excludes the bridge's OWN marks: it is not an approver, so its
+    👀 never counts as "the principal saw it".
     """
     log = C.ROOT / "reactions.jsonl"
     if message_id is None or not log.exists():
@@ -1096,7 +1154,7 @@ def _seen(chat_id: int, message_id: int) -> bool:
         except Exception:
             continue
         if rec.get("chat_id") == chat_id and rec.get("message_id") == message_id \
-                and rec.get("emoji"):
+                and rec.get("emoji") and rec.get("approver"):
             return True
     return False
 
@@ -1368,31 +1426,35 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
     """
     for rid in (item.get("answers") or []):
         req = C.REQUESTS / f"{rid}.json"
+        # MARK FIRST, THEN MOVE. Renaming the request into served BEFORE the
+        # 👍 was placed meant a failed ack left the inbox empty while 👀 still
+        # burned on the phone — done in the record, not-done to the human.
+        # Placing the mark first keeps the two in step; the move happens either
+        # way, because a named request IS answered and must leave the inbox.
+        if mark_done:
+            try:
+                # SPLIT FROM THE LEFT. A group's chat id is NEGATIVE, so the
+                # request id reads "284--5101395964" — and splitting from the
+                # right cut it at the id's own minus sign, giving message id
+                # "284-", which is not a number. The failure was caught and
+                # swallowed, so in groups the eyes simply never came off and
+                # nothing said why.
+                #
+                # The message id is always a positive integer and always
+                # first, so the first hyphen is the only safe boundary. Ids
+                # that begin with a word — verdict-..., reaction-... — still
+                # fail int() and are skipped, which is what they should do.
+                mid, chat = rid.split("-", 1)
+                done = item.get("done_emoji") or "👍"
+                how = ack(int(chat), int(mid), done)
+                # LOGGED, because an action nobody can see is an action nobody
+                # can check. This one was placed correctly and left no trace,
+                # so the only way to know it happened was to look at the phone.
+                print(f"[{now()}] done {done} -> {chat}/{mid}: {how}")
+            except (ValueError, KeyError):
+                pass                  # ids like "verdict-..." carry no message
         if req.exists():
             req.rename(C.SERVED / req.name)
-        if not mark_done:
-            continue
-        try:
-            # SPLIT FROM THE LEFT. A group's chat id is NEGATIVE, so the
-            # request id reads "284--5101395964" — and splitting from the
-            # right cut it at the id's own minus sign, giving message id
-            # "284-", which is not a number. The failure was caught and
-            # swallowed, so in groups the eyes simply never came off and
-            # nothing said why.
-            #
-            # The message id is always a positive integer and always first,
-            # so the first hyphen is the only safe boundary. Ids that begin
-            # with a word — verdict-..., reaction-... — still fail int() and
-            # are skipped, which is what they should do.
-            mid, chat = rid.split("-", 1)
-            done = item.get("done_emoji") or "👍"
-            how = ack(int(chat), int(mid), done)
-            # LOGGED, because an action nobody can see is an action nobody can
-            # check. This one was placed correctly and left no trace, so the
-            # only way to know it had happened was to go and look at the phone.
-            print(f"[{now()}] done {done} -> {chat}/{mid}: {how}")
-        except (ValueError, KeyError):
-            pass                      # ids like "verdict-..." carry no message
 
 
 def outgoing_prefix(pol: dict[str, Any], item: dict[str, Any]) -> str:
@@ -1467,7 +1529,18 @@ def flush_outbox() -> None:
             # inbox, so a request answered with 👍 sat there looking unserved.
             # Two ways of answering and one way of recording it is how the
             # record and the truth drift apart.
-            clear_inbox(item)
+            #
+            # BUT ONLY IF THE MARK ACTUALLY LANDED. If ack failed — invalid
+            # emoji, or the whole thing FAILED with no fallback message — then
+            # nothing is visible to the human, and clearing the inbox anyway
+            # would record "answered" over a message that shows no answer at
+            # all. Leave it open and say why. ("message" fallback DID reach
+            # them, so that still clears.)
+            if how == "invalid-emoji" or how.startswith("FAILED"):
+                print(f"[{now()}] MARK DID NOT LAND ({how}) — NOT clearing the "
+                      f"request, eye stays: {item.get('answers')}")
+            else:
+                clear_inbox(item)
         f.unlink(missing_ok=True)
 
     # EDITING ONE OF THE ASSISTANT'S OWN MESSAGES. Telegram allows a bot to
@@ -1510,11 +1583,45 @@ def flush_outbox() -> None:
         try:
             item = json.loads(f.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"[{now()}] malformed outbox file {f.name}: {e}")
+            # DO NOT SWALLOW SILENTLY, AND DO NOT STORM FOREVER. A malformed
+            # JSON used to stay in outbox and be re-read every second without
+            # end — undelivered to the human and unreturned to the assistant as
+            # broken. But the first failure may just be a half-written file
+            # (write_text = truncate then write), so quarantine only what has
+            # not fixed itself in a few seconds; the write window is
+            # microseconds, 5s is a wide margin.
+            try:
+                stale = time.time() - f.stat().st_mtime > 5
+            except OSError:
+                stale = False
+            if stale:
+                (C.OUTBOX / "rejected").mkdir(exist_ok=True)
+                f.rename(C.OUTBOX / "rejected" / f.name)
+                print(f"[{now()}] OUTBOX REJECTED — malformed JSON ({e}): "
+                      f"{f.name} -> rejected/")
+            else:
+                print(f"[{now()}] malformed outbox file {f.name}: {e} "
+                      f"(fresh — waiting, may be a partial write)")
             continue
         chat_id, text = item.get("chat_id"), (item.get("text") or "").strip()
         if not C.allowed(chat_id):
-            print(f"[{now()}] REFUSED: outbox {f.name} targets a chat not allowed")
+            # A REAL refusal (chat not in the list) goes to rejected/, or it
+            # would storm the log forever. BUT only if the list actually
+            # loaded: with a broken chats.json, allowed() is falsely False for
+            # everyone, and a blind quarantine would drain the whole outbox.
+            # Empty list = broken/missing config = do not quarantine, wait.
+            if C._chats():
+                (C.OUTBOX / "rejected").mkdir(exist_ok=True)
+                item["_rejected"] = f"chat {chat_id} not in the allowed list"
+                (C.OUTBOX / "rejected" / f.name).write_text(
+                    json.dumps(item, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+                f.unlink(missing_ok=True)
+                print(f"[{now()}] OUTBOX REJECTED — chat {chat_id} not allowed: "
+                      f"{f.name} -> rejected/")
+            else:
+                print(f"[{now()}] REFUSED (chats.json empty/broken?): {f.name} "
+                      f"-> {chat_id}; NOT quarantining, waiting for a fix")
             continue
         # ФАЙЛ В ОЧЕРЕДИ. Просили — «вышли файл сюда в чат»; до v1.3.0 мост
         # умел только текст, и это был честный отказ, а не оплошность: файлы
@@ -1575,6 +1682,13 @@ def flush_outbox() -> None:
                 print(f"[{now()}] файл отправлен по {kind} "
                       f"{who} -> {chat_id}: {fp.name}, "
                       f"{fp.stat().st_size} байт")
+                # A FILE IS AN ANSWER TOO, AND THE EYE MUST COME OFF. The text
+                # branch closes the named request via clear_inbox; the file
+                # branch silently dropped the answers field — the file went out
+                # but the request stayed, 👀 lit, a false "nobody took it" nudge
+                # 20 minutes later. Same "did (file sent) ≠ recorded (request
+                # not closed)" class.
+                clear_inbox(item, mark_done=True)
                 item["sent_at"] = now()
                 f.rename(C.SENT / f.name)
             else:

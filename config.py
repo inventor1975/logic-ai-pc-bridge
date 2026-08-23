@@ -47,7 +47,14 @@ def _settings() -> dict:
     try:
         import json as _j
         return _j.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except FileNotFoundError:
+        return {}                      # no file — normal, use defaults
+    except Exception as e:
+        # BROKEN JSON — NOT SILENTLY. A typo in settings.json used to drop all
+        # settings to defaults without a word; the cause was hunted blind.
+        import sys
+        print(f"[config] WARNING: settings.json did not parse ({e}) — using "
+              f"empty settings; check the JSON syntax", file=sys.stderr)
         return {}
 
 
@@ -149,6 +156,9 @@ CHAT_DEFAULTS = {
 CHATS_FILE = Path(__file__).resolve().parent / "chats.json"
 
 
+_CHATS_WARN_AT = [0.0]
+
+
 def _chats() -> dict:
     """Contents of chats.json.
 
@@ -158,7 +168,20 @@ def _chats() -> dict:
     try:
         import json as _j
         raw = _j.loads(CHATS_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except FileNotFoundError:
+        return {}                      # no file — stay quiet (may predate setup)
+    except Exception as e:
+        # A broken chats.json = allowed()=False for EVERYONE = the bridge goes
+        # mute. This used to be silent while the log filled with "chat NOT
+        # allowed" on the principal's own chat — the real cause (bad JSON) said
+        # nowhere. Read on every message, so throttle to once per 60s.
+        import sys, time
+        if time.time() - _CHATS_WARN_AT[0] > 60:
+            _CHATS_WARN_AT[0] = time.time()
+            print(f"[config] WARNING: chats.json did not parse ({e}) — the "
+                  f"bridge is MUTE for everyone until it is fixed. The 'chat "
+                  f"NOT allowed' lines below are a consequence, not the cause.",
+                  file=sys.stderr)
         return {}
     return {k: v for k, v in raw.items() if k.lstrip("-").isdigit()}
 
