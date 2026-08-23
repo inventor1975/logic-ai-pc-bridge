@@ -213,6 +213,18 @@ was answered, the other silently dropped, and the sender had to ask whether he
 had been heard. Attention is the wrong place to keep that record — it fails
 precisely when two things arrive at once, which is exactly when it matters.
 
+**Every request carries the open-eye list (`open_eyes`).** A field on each
+request to the assistant lists every message that still wears 👀 — everything
+not yet closed. This exists because the report of what was owed only scanned
+`requests/`: once a request aged out into `served/` with its eye still open, it
+fell out of sight, and the assistant could not close what it could not see.
+Over a long session more than a hundred eyes piled up that way — each a "not
+done" the principal reads by, none of them answered. The full backlog now rides
+on every message (`open_eye_backlog(chat_id)` — everything addressed that got
+👀, minus everything closed by `answers`, cached briefly), so a straggler is in
+front of the assistant on the next message and gets closed, rather than
+drifting out of sight.
+
 ## Editing what was already sent
 
     ./edit.py last "the corrected text"

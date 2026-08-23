@@ -668,6 +668,48 @@ def replying_to_me(msg: dict[str, Any]) -> bool:
     return bool(_ME[0]) and (replied.get("from") or {}).get("id") == _ME[0]
 
 
+_EYE_CACHE: dict = {}                          # {chat_id: (ts, [message_id, ...])}
+
+
+def open_eye_backlog(chat_id: int) -> list:
+    """message_ids in this chat that wear 👀 (a request exists) and were NOT
+    closed by `answers` — the full open set.
+
+    The curator navigates by these eyes (👀 = not processed), so the whole
+    backlog rides on every request to the assistant. It catches eyes that aged
+    out of requests/ into served/ and so dropped out of sight — over a long
+    session more than a hundred piled up that way, each a "not done" the
+    principal reads by, none of them answered. Computed from FILES (not a state
+    file that could drift), cached 10s so it is not recomputed on every message:
+    `closed` from sent/+outbox/ (the assistant's replies carrying `answers`),
+    `got` from requests/+served/ (the requests that received 👀).
+    """
+    cached = _EYE_CACHE.get(chat_id)
+    if cached and time.time() - cached[0] < 10:
+        return cached[1]
+    got, closed = set(), set()
+    name_re = re.compile(rf"^(\d+)-{chat_id}\.json$")
+    for base in (C.REQUESTS, C.SERVED):
+        for f in base.glob(f"*-{chat_id}.json"):
+            m = name_re.match(f.name)
+            if m:
+                got.add(int(m.group(1)))
+    ans_re = re.compile(rf"^(\d+)-{chat_id}$")
+    for base in (C.SENT, C.OUTBOX):
+        for f in base.glob("*.json"):
+            try:
+                item = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for a in (item.get("answers") or []):
+                mm = ans_re.match(str(a))
+                if mm:
+                    closed.add(int(mm.group(1)))
+    ids = sorted(got - closed)
+    _EYE_CACHE[chat_id] = (time.time(), ids)
+    return ids
+
+
 def accept(chat_id: int, msg: dict[str, Any], rec: dict[str, Any], text: str,
            frm: dict[str, Any], voice: bool = False) -> None:
     """Decide whether this is an address, and if so queue it."""
@@ -719,7 +761,8 @@ def accept(chat_id: int, msg: dict[str, Any], rec: dict[str, Any], text: str,
     rec["language"] = pol.get("language")
     rec["context"] = tail(chat_id, 6)         # so it does not decide blind
     (C.REQUESTS / f"{rid}.json").write_text(
-        json.dumps({**rec, "request_id": rid}, ensure_ascii=False, indent=2),
+        json.dumps({**rec, "request_id": rid, "open_eyes": open_eye_backlog(chat_id)},
+                   ensure_ascii=False, indent=2),
         encoding="utf-8")
 
     # A CONTROL QUESTION IS ITS OWN PING, not a field on someone else's request.
