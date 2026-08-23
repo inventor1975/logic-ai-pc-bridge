@@ -4,8 +4,13 @@ A small bridge that lets you reach your AI assistant from any device through
 Telegram, and lets it reach you — with boundaries that hold when nobody is
 watching.
 
-Python standard library only. No dependencies, no framework, no server.
-Linux, macOS and Windows.
+The **core bridge** is Python standard library only — no dependencies, no
+framework, no server. Linux, macOS and Windows.
+
+The **one optional exception is voice-note transcription**, which needs an
+external tool (`faster-whisper`) and runs as a *separate* subprocess. Without
+it the bridge still works fully — a voice note is simply saved instead of
+transcribed. Everything except that one feature runs on the standard library.
 
 ## What it actually does
 
