@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # Copyright 2026 Vitaly Reznik
 # SPDX-License-Identifier: Apache-2.0
-"""Показать журнал правил: что разрешено, кем одобрено, и что по нему ушло.
+"""Show the rules log: what is allowed, who approved it, and what went out under it.
 
     ./rules.py
 
-РАЗРЕШЕНИЕ, КОТОРОГО НЕ ВИДНО, через месяц перестаёт быть решением и становится
-привычкой. Правило снимает вопрос ЗАРАНЕЕ — значит единственная оставшаяся
-проверка идёт ПОСЛЕ, и она обязана быть под рукой, а не в логе на 40 тысяч строк.
+A PERMISSION YOU CANNOT SEE stops being a decision within a month and turns into
+a habit. A rule settles the question IN ADVANCE — so the only check left runs
+AFTERWARD, and it must be at hand, not buried in a 40-thousand-line log.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import config as C
 def main() -> int:
     rules = C.file_rules()
     if not rules:
-        print("журнал пуст — не разрешено НИЧЕГО, спрашивается каждый файл")
+        print("log is empty — NOTHING is allowed, every file is asked about")
         return 0
 
     log = C.ROOT / "sent_by_rule.log"
@@ -43,25 +43,25 @@ def main() -> int:
             names.append(f"{pol.get('_') or c} [{c}]")
         print(f"\n{rid}  «{r.get('project') or '—'}»")
         for d in (r.get("dirs") or []):
-            print(f"    папка    {d.get('dir')}  ({d.get('glob') or '*'})")
+            print(f"    folder   {d.get('dir')}  ({d.get('glob') or '*'})")
         for pth in (r.get("paths") or []):
-            print(f"    файл     {pth}")
-        if r.get("dir"):                       # форма v1.4
-            print(f"    папка    {r['dir']}  ({r.get('glob') or '*'})")
+            print(f"    file     {pth}")
+        if r.get("dir"):                       # v1.4 form
+            print(f"    folder   {r['dir']}  ({r.get('glob') or '*'})")
         for n in names:
-            print(f"    кому     {n}")
-        print(f"    срок     {r.get('expires_at') or 'без срока'}")
-        # КТО одобрил — числом, а не именем: имя человек выбирает себе сам.
+            print(f"    to       {n}")
+        print(f"    expires  {r.get('expires_at') or 'no expiry'}")
+        # WHO approved — by number, not by name: people pick their own names.
         who = r.get("added_by_user_id")
-        print(f"    одобрил  {who if who else 'НИКТО — правило недействительно'}"
+        print(f"    approved {who if who else 'NOBODY — rule is invalid'}"
               f"  {r.get('decision_reaction') or ''}  {r.get('added_at') or ''}")
-        print(f"    ушло     {used.get(rid, 0)}"
-              + (f", последнее {last[rid]}" if rid in last else ""))
+        print(f"    sent     {used.get(rid, 0)}"
+              + (f", last {last[rid]}" if rid in last else ""))
 
     total = sum(used.values())
-    print(f"\nвсего правил {len(rules)}, отправок по ним {total}")
+    print(f"\ntotal rules {len(rules)}, sends under them {total}")
     if total and not log.exists():
-        print("НЕСХОДИМОСТЬ: счёт есть, журнала отправок нет")
+        print("MISMATCH: there is a count but no send log")
     return 0
 
 

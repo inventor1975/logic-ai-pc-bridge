@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Тесты замка состояния: разовое согласие не воскресает, решение — одно.
+"""State-lock tests: one-time consent does not resurrect, a decision is final.
 
-Гонка, которую это закрывает: grants.json/rules.json правятся read-modify-write
-из двух потоков (главный _close, pump spend_grant/sweep_proposals). Без общего
-замка и атомарной записи терялась правка — худшее — used_at разового
-разрешения, и файл мог уйти повторно без нового «да».
+The race this closes: grants.json/rules.json are edited read-modify-write
+from two threads (main _close, pump spend_grant/sweep_proposals). Without a shared
+lock and an atomic write, an edit was lost — worst of all the used_at of a one-time
+grant — and the file could be sent again without a fresh "yes".
 
-Offline: сеть не трогается.
+Offline: the network is not touched.
 """
 import os, sys, json, tempfile
 from pathlib import Path
@@ -32,14 +32,14 @@ def run():
         C.GRANTS = tmp / "grants.json"
         C.RULES = tmp / "rules.json"
 
-        # --- _atomic_write: целый файл, без хвоста .tmp ---
+        # --- _atomic_write: the whole file, no .tmp leftover ---
         B._atomic_write(tmp / "x.json", '{"a":1}')
-        check("_atomic_write: файл записан целиком",
+        check("_atomic_write: file written in full",
               (tmp / "x.json").read_text() == '{"a":1}')
-        check("_atomic_write: временный файл не оставлен",
+        check("_atomic_write: temp file not left behind",
               not (tmp / "x.json.tmp").exists())
 
-        # --- _close APPROVED с пачкой -> одно разрешение, вердикт APPROVED ---
+        # --- _close APPROVED with a batch -> one grant, verdict APPROVED ---
         pf = C.PROPOSALS / "100-200.json"
         prop = {"chat_id": 200, "message_id": 100, "one_line": "send a",
                 "batch": {"chat_id": 200,
@@ -47,34 +47,34 @@ def run():
         pf.write_text(json.dumps(prop), encoding="utf-8")
         B._close(pf, dict(prop), "APPROVED", uid=7)
         gs = json.loads(C.GRANTS.read_text())
-        check("_close APPROVED: ровно одно разрешение", len(gs) == 1)
-        check("_close APPROVED: used_at пусто (не потрачено)",
+        check("_close APPROVED: exactly one grant", len(gs) == 1)
+        check("_close APPROVED: used_at empty (not spent)",
               gs and gs[0].get("used_at") is None)
         dec = json.loads((C.DECIDED / "100-200.json").read_text())
-        check("_close APPROVED: решение записано APPROVED",
+        check("_close APPROVED: decision recorded as APPROVED",
               dec.get("verdict") == "APPROVED")
-        check("_close: pf убран из ожидающих", not pf.exists())
+        check("_close: pf removed from the pending set", not pf.exists())
 
-        # --- ИДЕМПОТЕНТНОСТЬ: повторный _close (EXPIRED) НЕ дублирует и НЕ
-        #     затирает. Именно так гасится гонка decide vs sweep_proposals. ---
+        # --- IDEMPOTENCE: a repeated _close (EXPIRED) does NOT duplicate and does NOT
+        #     overwrite. This is exactly how the decide vs sweep_proposals race is quenched. ---
         gid = gs[0]["id"]
         B._close(pf, dict(prop), "EXPIRED", uid=None)
         gs2 = json.loads(C.GRANTS.read_text())
-        check("идемпотентность: разрешение НЕ продублировано", len(gs2) == 1)
+        check("idempotence: grant NOT duplicated", len(gs2) == 1)
         dec2 = json.loads((C.DECIDED / "100-200.json").read_text())
-        check("идемпотентность: вердикт APPROVED не затёрт на EXPIRED",
+        check("idempotence: APPROVED verdict not overwritten with EXPIRED",
               dec2.get("verdict") == "APPROVED")
 
-        # --- spend_grant: тратит разовое, ставит used_at ---
+        # --- spend_grant: spends the one-time grant, sets used_at ---
         B.spend_grant(gid)
         gs3 = json.loads(C.GRANTS.read_text())
-        check("spend_grant: used_at проставлен",
+        check("spend_grant: used_at set",
               gs3[0].get("used_at") is not None)
-        # повторный spend не воскрешает и не меняет
+        # a repeated spend neither resurrects nor changes anything
         before = gs3[0]["used_at"]
         B.spend_grant(gid)
         gs4 = json.loads(C.GRANTS.read_text())
-        check("spend_grant: повторный не меняет уже потраченное",
+        check("spend_grant: a repeat does not change what was already spent",
               gs4[0]["used_at"] == before)
 
     print("test_locks:", "OK" if fail == 0 else "FAIL", f"({ok} ok, {fail} fail)")

@@ -277,10 +277,11 @@ ACK_EMOJI = "👀"
 # message — measured 2026-08-22: ✅ is NOT here, so twenty "✅" messages went
 # out and not one 👀 changed. A done-mark must be chosen from THIS set (👍 is
 # the safe default); ✅ ❌ 🟢 ✔️ and most others are not reactions.
-# Контрольные вопросы против потери контекста ассистента: каждое N-е адресованное
-# сообщение принципала мост запускает selfcheck present ОТДЕЛЬНЫМ процессом (не
-# тащит ztl.py в себя) и кладёт вопрос+раскрытие в заметку заявки. Судья — код.
-# Упало/таймаут — молча пропускаем: контрольный вопрос НИКОГДА не роняет доставку.
+# Control questions, against the assistant losing its context: on every Nth
+# addressed message from the principal the bridge runs selfcheck present as a
+# SEPARATE process (it does not pull ztl.py into itself) and puts the
+# question+disclosure into the request's note. The judge is the code. Crash or
+# timeout — skipped silently: a control question NEVER drops delivery.
 SELFCHECK_EVERY = 5
 SELFCHECK_PRESENT = ["python3",
     "/media/vitaly/SSD_1000GB/Projects/SelfCheck/selfcheck.py", "present"]
@@ -310,11 +311,11 @@ MARKER_MIN_CHARS = 200   # short acknowledgements are exempt
 # this is entitled to assume that only messages addressed to the bot are kept.
 #
 # Edit the wording to name your own operator. Do not remove it.
-# ЧТО ЛЮДЯМ ГОВОРИТСЯ ПРИ ПЕРВОМ ЖЕ СООБЩЕНИИ. Текст перечисляет то, что
-# ДЕЙСТВИТЕЛЬНО собирается, а не то, что собиралось когда-то. С версии 1.1.0
-# мост скачивает и хранит ВЛОЖЕНИЯ — картинки, документы, голос, — а
-# объявление всё ещё говорило только про переписку. Уведомление, отставшее от
-# программы, хуже отсутствующего: оно выглядит как обещание.
+# WHAT PEOPLE ARE TOLD ON THE VERY FIRST MESSAGE. The text lists what is
+# ACTUALLY collected, not what once was. Since version 1.1.0 the bridge
+# downloads and stores ATTACHMENTS — pictures, documents, voice — while the
+# notice still spoke only of the conversation. A notice that lags behind the
+# program is worse than none: it reads as a promise.
 def announce_text(chat_id: int) -> str:
     signed = ("Мои ответы помечены «{name} ИИ({op}):», так что всегда видно, "
               "кто говорит. ".format(name=BOT_NAME, op=OPERATOR)
@@ -339,64 +340,67 @@ OUTBOX_SCAN = 1.0         # how often to look at the outbox, seconds
 # PATHS
 # --------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parent
-SELFCHECK_COUNT = ROOT / "selfcheck_count"   # счётчик обращений принципала
+SELFCHECK_COUNT = ROOT / "selfcheck_count"   # counter of the principal's addresses
 LOG = ROOT / "tg_log.jsonl"
-REQUESTS = ROOT / "requests"            # ЖДУТ ОТВЕТА — это и есть ящик Логика
-SERVED = ROOT / "served"                # отвеченное, убрано с глаз
+REQUESTS = ROOT / "requests"            # AWAITING A REPLY — this is Logic's inbox
+SERVED = ROOT / "served"                # answered, moved out of sight
 OUTBOX = ROOT / "outbox"
 SENT = ROOT / "sent"
 REMINDERS = ROOT / "reminders"          # scheduled; the BRIDGE sends these
 SENT_REMINDERS = ROOT / "sent_reminders"
 REMINDER_SCAN = 20.0                    # how often to check the schedule, seconds
-MEDIA = ROOT / "media"                  # вложения, по каталогу на запрос
+MEDIA = ROOT / "media"                  # attachments, one directory per request
 
-# СКОЛЬКО БАЙТ МЫ СОГЛАСНЫ ПРИНЯТЬ С ЧУЖОЙ МАШИНЫ. Проверяется по метаданным
-# Телеграма ДО загрузки, поэтому крупный файл стоит одного вызова, а не диска.
-# Двадцать мегабайт — это и есть потолок getFile у Bot API: просить больше
-# значит обещать то, чего сервер всё равно не даст.
+# HOW MANY BYTES WE AGREE TO ACCEPT FROM SOMEONE ELSE'S MACHINE. Checked
+# against Telegram's metadata BEFORE downloading, so a large file costs one
+# call, not disk. Twenty megabytes is exactly getFile's ceiling in the Bot
+# API: asking for more means promising what the server will not give anyway.
 MEDIA_MAX_BYTES = int(_S.get("media_max_bytes", 20 * 1024 * 1024))
 
-# СКОЛЬКО МЕСТА ВЛОЖЕНИЯМ ОТВЕДЕНО ВСЕГО. Уборка идёт по ПЕРЕПОЛНЕНИЮ, а не по
-# сроку — слово куратора 2026-08-22: файл, присланный полгода назад, может быть
-# нужен, а сорок сегодняшних — нет. Возраст не знает, что важно; объём хотя бы
-# честен.
+# HOW MUCH SPACE ATTACHMENTS GET IN TOTAL. Cleanup runs on OVERFLOW, not on
+# age — the operator's word 2026-08-22: a file sent half a year ago may be
+# needed, while forty of today's may not. Age does not know what matters; size
+# is at least honest.
 #
-# Два гигабайта, и вот откуда число. Потолок на файл — двадцать мегабайт, то
-# есть сотня самых больших вложений или, при нынешнем размере снимка около ста
-# двадцати килобайт, порядка семнадцати тысяч картинок. Обычное употребление
-# сюда не упрётся никогда; зарвавшийся отправитель упрётся быстро и диска не
-# съест. На фоне свободного места это доли процента.
+# Two gigabytes, and here is where the number comes from. The per-file ceiling
+# is twenty megabytes, so a hundred of the largest attachments or, at the
+# current snapshot size of about a hundred and twenty kilobytes, on the order
+# of seventeen thousand pictures. Ordinary use will never hit this; a sender
+# who overreaches hits it fast and does not eat the disk. Against the free
+# space it is a fraction of a percent.
 MEDIA_BUDGET_BYTES = int(_S.get("media_budget_bytes", 2 * 1024 ** 3))
 
-# ЖУРНАЛ ПРАВИЛ НА ОТПРАВКУ ФАЙЛОВ.
+# THE LOG OF RULES FOR SENDING FILES.
 #
-# Слово куратора 2026-08-22: «файлы — это уже не буковки, надо от дурака
-# защищаться… но я бы не хотел полной детерминированности. Каждый раз
-# подтверждение — это геморрой. Надо как-то по журналу правил: знакомый класс отправляй,
-# что-то новое спроси, ранее согласованное — вообще не спрашивай».
+# The operator's word 2026-08-22: "files are not just little letters anymore,
+# you have to guard against a fool... but I would not want full determinism.
+# Confirming every single time is a pain. It should go by a log of rules
+# somehow: a familiar class — send it; something new — ask; already agreed —
+# don't ask at all."
 #
-# Отсюда устройство: подтверждение переезжает С ЭКЗЕМПЛЯРА НА ПРАВИЛО. Один раз
-# одобряется КЛАСС отправок — эта папка в эту комнату, — и дальше всё, что в
-# класс попадает, идёт без вопроса. Всё, что не попадает, спрашивается.
+# Hence the design: confirmation moves FROM THE INSTANCE TO THE RULE. A CLASS
+# of sends is approved once — this folder into this room — and after that
+# everything that falls into the class goes without a question. Everything that
+# does not is asked about.
 #
-# Правило НЕ МОЖЕТ появиться от меня. Оно вписывается сюда только мостом и
-# только по метке куратора, вместе с его числовым идентификатором, самой меткой
-# и номером предложения. Правило без этих полей — не правило, а подделка.
-# Тот же запрет, что в институциональных допусках: ограничиваемая
-# сторона не изготавливает объект, который её ограничивает.
-NEEDS_CONSENT = ROOT / "needs_consent"   # файлы, ждущие отдельного решения
+# A rule CANNOT come from me. It is written here only by the bridge and only on
+# the operator's mark, together with his numeric id, the mark itself and the
+# proposal number. A rule without these fields is not a rule but a forgery. The
+# same prohibition as in institutional clearances: the constrained party does
+# not manufacture the object that constrains it.
+NEEDS_CONSENT = ROOT / "needs_consent"   # files awaiting a separate decision
 
 RULES = ROOT / "rules.json"
-GRANTS = ROOT / "grants.json"            # РАЗОВЫЕ разрешения на конкретные файлы
+GRANTS = ROOT / "grants.json"            # ONE-TIME permissions for specific files
 
 
 def grants() -> list:
-    """Разовые разрешения. Правило — для потока, разрешение — для случая.
+    """One-time permissions. A rule is for a stream, a permission for a case.
 
-    Живут отдельно от правил НАМЕРЕННО. Правило описывает КЛАСС и действует
-    впредь; разрешение названо по отпечатку, тратится один раз и больше не
-    значит ничего. Сложить их в один файл значит через месяц не отличить
-    «я разрешил такие файлы» от «я разрешил ЭТОТ файл».
+    Kept apart from rules DELIBERATELY. A rule describes a CLASS and holds
+    going forward; a permission is named by fingerprint, spent once and means
+    nothing afterwards. Putting them in one file would mean, a month later, not
+    telling "I allowed files like this" from "I allowed THIS file".
     """
     try:
         data = json.loads(GRANTS.read_text(encoding="utf-8"))
@@ -405,22 +409,24 @@ def grants() -> list:
         return []
 
 
-# СКОЛЬКО ФАЙЛОВ МОЖНО ПОВЕСИТЬ ПОД ОДНУ МЕТКУ. Десять — не круглое число ради
-# красоты: список длиннее читать глазами перестают, а метка под непрочитанным
-# списком есть штамп, как её ни назови. В самом мосте это записано с первого
-# дня: «метка под списком из пяти дел становится штампом в течение недели».
-# Ответ на «много файлов» — не пачка побольше, а ПРАВИЛО на папку.
+# HOW MANY FILES MAY HANG UNDER ONE MARK. Ten is not a round number for looks:
+# a longer list stops being read by eye, and a mark under an unread list is a
+# rubber stamp, whatever you call it. It is written in the bridge itself from
+# day one: "a mark under a list of five tasks becomes a rubber stamp within a
+# week." The answer to "many files" is not a bigger batch but a RULE on the
+# folder.
 BATCH_MAX = int(_S.get("batch_max", 10))
 
-# ЧЕРЕЗ СКОЛЬКО МИНУТ СКАЗАТЬ, ЧТО НИКТО НЕ ВЗЯЛ. Двадцать: меньше — и мост
-# заговорит поперёк ассистента, который просто думает; больше — и человек уже
-# успел решить, что его забыли. Считается от записи в ящик, не от отправки.
+# AFTER HOW MANY MINUTES TO SAY THAT NOBODY TOOK IT UP. Twenty: less and the
+# bridge speaks across the assistant that is merely thinking; more and the
+# person has already decided they were forgotten. Counted from the write into
+# the inbox, not from sending.
 NUDGE_AFTER_MIN = int(_S.get("nudge_after_min", 20))
 
 
 def file_rules() -> list:
-    """Правила отправки файлов. Пустой список, если журнала нет — то есть
-    по умолчанию НЕ РАЗРЕШЕНО НИЧЕГО, и спрашивается всё."""
+    """Rules for sending files. An empty list if there is no log — that is,
+    by default NOTHING IS ALLOWED, and everything is asked about."""
     try:
         data = json.loads(RULES.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []

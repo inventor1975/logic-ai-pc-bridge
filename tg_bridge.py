@@ -160,14 +160,14 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def announce(chat_id: int) -> None:
-    """Уведомление о записи — один раз на чат, ДО того как из него что-то ляжет
-    на диск.
+    """Notice that this chat is logged — once per chat, BEFORE anything from it
+    lands on disk.
 
-    КЛЮЧ — НЕ КОМНАТА, А КОМНАТА ПЛЮС ОТПЕЧАТОК ТЕКСТА. Первая версия помнила
-    только номер чата, поэтому изменившееся уведомление никогда бы не дошло до
-    тех, кому уже что-то сказали: программа собирает больше, а люди знают по
-    старому. Отпечаток в ключе означает, что расширение сбора само поднимает
-    новое уведомление.
+    THE KEY IS NOT THE ROOM, IT IS THE ROOM PLUS A FINGERPRINT OF THE TEXT. The
+    first version remembered only the chat id, so a changed notice would never
+    reach those already told: the program collects more, but people know it by
+    the old wording. A fingerprint in the key means that widening the collection
+    raises a fresh notice by itself.
     """
     text = C.announce_text(chat_id)
     key = f"{chat_id}:{hashlib.sha256(text.encode()).hexdigest()[:12]}"
@@ -285,27 +285,27 @@ _STATE_LOCK = threading.RLock()
 
 def rule_for(chat_id: int, path: Path,
              rules: list | None = None) -> dict[str, Any] | None:
-    """Какое стоячее правило покрывает отправку ЭТОГО файла в ЭТУ комнату.
+    """Which standing rule covers sending THIS file to THIS room.
 
-    По умолчанию не покрывает ничего: пустой журнал значит «спрашивай всё».
-    Разрешение только ДОБАВЛЯЕТСЯ явной записью и никогда не выводится.
+    By default it covers nothing: an empty journal means "ask about everything".
+    A permission is only ADDED by an explicit record and is never inferred.
 
-    ДВА УРОВНЯ ПРЕДМЕТА, по слову куратора («оговорили конкретные, и только
-    тогда можно, всё по полному пути; и папки так же»):
+    TWO LEVELS OF SUBJECT, by the curator's word ("we named specific ones, and
+    only then is it allowed, all by full path; and folders the same way"):
 
-        paths  точные полные пути — разрешён ИМЕННО ЭТОТ файл и никакой другой
-        dirs   папка целиком, с образцом имени внутри неё
+        paths  exact full paths — THIS file and no other is allowed
+        dirs   a whole folder, with a name pattern inside it
 
-    Точный путь строже и потому идёт первым: там, где перечислены конкретные
-    файлы, новый файл в той же папке НЕ разрешён, пока его не назвали.
+    An exact path is stricter and therefore comes first: where specific files
+    are listed, a new file in the same folder is NOT allowed until it is named.
 
-    КОМНАТЫ ПЕРЕЧИСЛЯЮТСЯ. Правило может назвать несколько, но не может сказать
-    «любая»: такого поля нет. Комната, о которой не подумали, не попадёт в
-    правило никогда — не по бдительности, а по устройству формата.
+    ROOMS ARE ENUMERATED. A rule may name several, but cannot say "any": there
+    is no such field. A room nobody thought of will never fall into a rule — not
+    by vigilance, but by the shape of the format.
 
-    `project` — ЯРЛЫК для чтения журнала человеком. Он НИКОГДА не проверяется:
-    ярлык может сползти, путь не может. Проверка по ярлыку означала бы, что
-    достаточно назвать чужую папку правильным словом.
+    `project` is a LABEL for a human reading the journal. It is NEVER checked: a
+    label can slip, a path cannot. Checking by the label would mean it is enough
+    to call someone else's folder by the right word.
     """
     rules = C.file_rules() if rules is None else rules
     try:
@@ -323,7 +323,7 @@ def rule_for(chat_id: int, path: Path,
         # an arbitrary nonzero id (a corrupted file, a hand-edit) used to pass —
         # now the id must be an approver of at least one chat.
         if r.get("added_by_user_id") not in approver_ids:
-            print(f"[{now()}] ПРАВИЛО НЕ ОТ ОДОБРЯЮЩЕГО, пропущено: {r.get('id')} "
+            print(f"[{now()}] RULE NOT FROM AN APPROVER, skipped: {r.get('id')} "
                   f"(added_by={r.get('added_by_user_id')})")
             continue
         exp = r.get("expires_at")
@@ -350,7 +350,7 @@ def rule_for(chat_id: int, path: Path,
                 continue
 
         dirs = r.get("dirs")
-        if dirs is None and r.get("dir"):      # форма v1.4, поддерживается
+        if dirs is None and r.get("dir"):      # v1.4 form, still supported
             dirs = [{"dir": r["dir"], "glob": r.get("glob")}]
         for d in (dirs or []):
             base_s = d.get("dir") if isinstance(d, dict) else d
@@ -369,11 +369,12 @@ def rule_for(chat_id: int, path: Path,
 
 
 def grant_for(chat_id: int, path: Path) -> dict[str, Any] | None:
-    """Разовое разрешение на ЭТОТ файл в ЭТУ комнату, ещё не потраченное.
+    """A one-time permission for THIS file in THIS room, not yet spent.
 
-    Привязка по ОТПЕЧАТКУ, а не по имени: одобрено то, что человек видел в
-    предложении. Подменили содержимое после метки — отпечаток разошёлся, и
-    разрешение не сработает. Имя тут для чтения, отпечаток для дела.
+    Bound by FINGERPRINT, not by name: what was approved is what the human saw
+    in the proposal. Swap the contents after the mark and the fingerprint no
+    longer matches, so the permission does not fire. The name is here for
+    reading, the fingerprint for acting.
     """
     try:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -385,7 +386,7 @@ def grant_for(chat_id: int, path: Path) -> dict[str, Any] | None:
             continue
         # Like a rule: the id must be a REAL approver, not merely nonempty.
         if g.get("added_by_user_id") not in approver_ids:
-            print(f"[{now()}] РАЗРЕШЕНИЕ НЕ ОТ ОДОБРЯЮЩЕГО, пропущено: {g.get('id')} "
+            print(f"[{now()}] PERMISSION NOT FROM AN APPROVER, skipped: {g.get('id')} "
                   f"(added_by={g.get('added_by_user_id')})")
             continue
         if g.get("chat_id") == chat_id and g.get("sha256") == digest:
@@ -394,7 +395,7 @@ def grant_for(chat_id: int, path: Path) -> dict[str, Any] | None:
 
 
 def spend_grant(gid: str) -> None:
-    """Потратить разрешение. Разовое значит разовое.
+    """Spend a permission. One-time means one-time.
 
     Under _STATE_LOCK and atomic: otherwise a concurrent _close (main thread)
     appending a new grant would overwrite this used_at, and one-time consent
@@ -411,23 +412,24 @@ def spend_grant(gid: str) -> None:
 
 def send_file(chat_id: int, path: Path, caption: str = "",
               as_photo: bool = False) -> dict[str, Any]:
-    """Отправить файл в чат. Своя сборка multipart, без сторонних библиотек.
+    """Send a file to a chat. Our own multipart assembly, no third-party libraries.
 
-    ПОЧЕМУ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ПАРАМЕТР К `call`. Обычный вызов кодирует
-    поля как urlencoded; файл так не передать. Это не «ещё один метод», это
-    другой способ говорить с тем же API, и смешивать их в одной функции значит
-    прятать различие, которое потом кого-нибудь укусит.
+    WHY A SEPARATE FUNCTION AND NOT A PARAMETER TO `call`. An ordinary call
+    encodes the fields as urlencoded; a file cannot be sent that way. This is
+    not "one more method", it is a different way of talking to the same API, and
+    mixing them into one function means hiding a difference that will bite
+    someone later.
 
-    Подпись обрезается до 1024 знаков — столько разрешает Bot API. Обрезаем
-    ЗАРАНЕЕ и говорим об этом, иначе сервер откажет целиком и файл не уйдёт
-    из-за лишней строки текста.
+    The caption is trimmed to 1024 characters — as much as the Bot API allows.
+    We trim it IN ADVANCE and say so, or the server refuses the whole thing and
+    the file never leaves over one extra line of text.
     """
     if not path.exists():
         return {"ok": False, "description": f"нет такого файла: {path}"}
     method = "sendPhoto" if as_photo else "sendDocument"
     field = "photo" if as_photo else "document"
     if len(caption) > 1024:
-        print(f"[{now()}] caption {len(caption)} > 1024, обрезана")
+        print(f"[{now()}] caption {len(caption)} > 1024, trimmed")
         caption = caption[:1021] + "..."
 
     boundary = "----LogicBridge" + hashlib.sha256(
@@ -442,10 +444,10 @@ def send_file(chat_id: int, path: Path, caption: str = "",
     field_part("chat_id", str(chat_id))
     if caption:
         field_part("caption", caption)
-    # ИМЯ ФАЙЛА ИДЁТ В ЗАГОЛОВОК, ЗНАЧИТ ЕГО НАДО ОБЕЗЗАРАЗИТЬ. Кавычка или
-    # перевод строки в имени — это не косметика: заголовок закрывается раньше
-    # времени, и дальше в него можно дописать что угодно. Имя файла приходит из
-    # разрешённой папки, но кто кладёт туда файлы, тот и выбирает им имена.
+    # THE FILE NAME GOES INTO A HEADER, SO IT MUST BE SANITISED. A quote or a
+    # newline in the name is not cosmetic: the header closes early, and anything
+    # can be appended past it. The file name comes from an allowed folder, but
+    # whoever drops files there is the one who chooses their names.
     safe = path.name.replace('"', "'").replace("\r", " ").replace("\n", " ")
     parts.append(f"--{boundary}\r\n".encode())
     parts.append((f'Content-Disposition: form-data; name="{field}"; '
@@ -469,16 +471,16 @@ def fetch_file(file_id: str, dest: Path, max_bytes: int | None = None) -> bool:
     """Download a file the bot was sent. Separate from call(): the file API
     lives on a different host and returns bytes, not JSON.
 
-    ПОТОЛОК ПРОВЕРЯЕТСЯ ЗДЕСЬ, А НЕ ТОЛЬКО У ЗВОНЯЩЕГО. Первая версия смотрела
-    на `file_size` из обновления и читала ответ целиком одним `read()`. Две дыры
-    в одной строке: поля `file_size` в обновлении может НЕ БЫТЬ вовсе — тогда
-    проверка молча не срабатывала, — а `read()` без предела читает столько,
-    сколько дадут. Обещание «двадцать мегабайт» держалось на честном слове
-    отправителя.
+    THE CAP IS CHECKED HERE, NOT ONLY AT THE CALLER. The first version looked
+    at `file_size` from the update and read the whole response with a single
+    `read()`. Two holes in one line: the `file_size` field may be ABSENT from
+    the update altogether — then the check silently did nothing — and an
+    unbounded `read()` reads as much as it is given. The promise of "twenty
+    megabytes" rested on the sender's honesty.
 
-    Теперь: спрашиваем размер у самого API, читаем КУСКАМИ и обрываем на
-    превышении, а недокачанное удаляем — половина файла хуже, чем ничего,
-    потому что выглядит как файл.
+    Now: we ask the API itself for the size, read IN CHUNKS and break off on
+    overrun, and delete a partial download — half a file is worse than nothing,
+    because it looks like a file.
     """
     cap = C.MEDIA_MAX_BYTES if max_bytes is None else max_bytes
     r = call("getFile", file_id=file_id)
@@ -489,7 +491,7 @@ def fetch_file(file_id: str, dest: Path, max_bytes: int | None = None) -> bool:
         return False
     told = res.get("file_size")
     if told and told > cap:
-        print(f"[{now()}] отказ по размеру: API говорит {told} > {cap}")
+        print(f"[{now()}] refused by size: the API says {told} > {cap}")
         return False
     url = f"https://api.telegram.org/file/bot{C.TOKEN}/{path}"
     try:
@@ -504,8 +506,8 @@ def fetch_file(file_id: str, dest: Path, max_bytes: int | None = None) -> bool:
                 if got > cap:
                     out.close()
                     dest.unlink(missing_ok=True)
-                    print(f"[{now()}] ОБРЫВ: поток превысил {cap} байт "
-                          f"(API обещал {told}) — недокачанное удалено")
+                    print(f"[{now()}] BROKEN OFF: the stream exceeded {cap} bytes "
+                          f"(the API promised {told}) — partial download deleted")
                     return False
                 out.write(chunk)
         return True
@@ -891,10 +893,10 @@ def file_job(chat_id: int, msg: dict[str, Any], rec: dict[str, Any],
     # shows a thing instead of a blank line.
     text = caption.strip()
     if not text:
-        what = ", ".join(f"{g['name']} ({g.get('bytes', 0) // 1024} КБ)"
+        what = ", ".join(f"{g['name']} ({g.get('bytes', 0) // 1024} KB)"
                          if "path" in g else f"{g.get('name')} — {g['refused']}"
-                         for g in got) or "вложение"
-        text = f"[вложение: {what}]"
+                         for g in got) or "attachment"
+        text = f"[attachment: {what}]"
     rec["text"] = text
     accept(chat_id, msg, rec, text, msg.get("from", {}))
 
@@ -957,10 +959,10 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
                          daemon=True).start()
         return
 
-    # ВЛОЖЕНИЕ БЕЗ ПОДПИСИ ПРИХОДИЛО ПУСТЫМ ЗАПРОСОМ — и один раз это уже
-    # стоило потерянной картинки: 2026-08-21 снимок от третьего лица лёг в
-    # ящик как пустота и был закрыт как «отвечать нечего». Мост читал только
-    # text и caption; всё остальное для него не существовало.
+    # AN ATTACHMENT WITHOUT A CAPTION ARRIVED AS AN EMPTY REQUEST — and once
+    # that already cost a lost picture: on 2026-08-21 a third party's photo
+    # landed in the inbox as a blank and was closed as "nothing to answer". The
+    # bridge read only text and caption; everything else did not exist for it.
     att = attachments_of(msg)
     if att:
         threading.Thread(target=_guarded, args=(file_job, chat_id, msg, rec, att, text),
@@ -1024,7 +1026,7 @@ def handle_reaction(mr: dict[str, Any]) -> None:
                         "from_principal": True, "reaction": emoji,
                         "on_my_message": what_i_said(chat_id, mid),
                         "text": f"reaction {' '.join(emoji)}",
-                        "ask": f"реакция {' '.join(emoji)} на моё сообщение",
+                        "ask": f"reaction {' '.join(emoji)} on my message",
                         "topic": C.policy(chat_id).get("topic"),
                         "language": C.policy(chat_id).get("language"),
                         "context": tail(chat_id, 4)}, ensure_ascii=False, indent=2),
@@ -1083,16 +1085,16 @@ def _close_locked(pf: Path, prop: dict[str, Any], verdict: str,
     prop["decision_event_at"] = now()
     prop["proposal_message_id"] = prop.get("message_id")
     prop["proposal_chat_id"] = prop.get("chat_id")
-    # СТОЯЧЕЕ ПРАВИЛО РОЖДАЕТСЯ ЗДЕСЬ И БОЛЬШЕ НИГДЕ. Предложение может нести
-    # правило; в журнал оно попадает только вместе с числовым идентификатором
-    # того, кто поставил метку, самой меткой и номером предложения. Ассистент
-    # правило ПРЕДЛАГАЕТ и никогда не вписывает — тот же запрет, что
-    # в институциональных допусках: ограничиваемая сторона не изготавливает объект,
-    # который её ограничивает.
-    # ПАЧКА. Одна метка — одна ПОСЫЛКА в ОДНУ комнату, и каждый файл в ней
-    # назван отпечатком. Это не «список дел под одной галочкой»: пять файлов
-    # одной посылки — одно дело с пятью частями, а пять разных дел так
-    # объединять по-прежнему нельзя.
+    # A STANDING RULE IS BORN HERE AND NOWHERE ELSE. A proposal may carry a
+    # rule; it reaches the journal only together with the numeric id of whoever
+    # placed the mark, the mark itself, and the proposal number. The assistant
+    # PROPOSES a rule and never writes it in — the same prohibition as in
+    # institutional clearances: the constrained party does not manufacture the
+    # object that constrains it.
+    # A BATCH. One mark — one CONSIGNMENT to ONE room, and every file in it is
+    # named by fingerprint. This is not "a to-do list under one checkmark": five
+    # files of one consignment are one matter with five parts, while five
+    # separate matters still cannot be joined this way.
     if verdict == "APPROVED" and prop.get("batch") and uid:
         try:
             gs = C.grants()
@@ -1107,10 +1109,10 @@ def _close_locked(pf: Path, prop: dict[str, Any], verdict: str,
                            "proposal_message_id": prop.get("message_id"),
                            "used_at": None})
             _atomic_write(C.GRANTS, json.dumps(gs, ensure_ascii=False, indent=1))
-            print(f"[{now()}] ПАЧКА РАЗРЕШЕНА: {len(prop['batch']['files'])} "
-                  f"файлов -> {prop['batch']['chat_id']} (метка {uid})")
+            print(f"[{now()}] BATCH APPROVED: {len(prop['batch']['files'])} "
+                  f"files -> {prop['batch']['chat_id']} (mark {uid})")
         except Exception as e:
-            print(f"[{now()}] пачка НЕ записана: {type(e).__name__}: {e}")
+            print(f"[{now()}] batch NOT written: {type(e).__name__}: {e}")
 
     if verdict == "APPROVED" and prop.get("rule") and uid:
         try:
@@ -1125,11 +1127,11 @@ def _close_locked(pf: Path, prop: dict[str, Any], verdict: str,
             where = ", ".join(str(d.get("dir")) for d in (rule.get("dirs") or [])) \
                 or ", ".join(rule.get("paths") or []) or rule.get("dir") or "?"
             rooms = rule.get("chats") or [rule.get("chat_id")]
-            print(f"[{now()}] ПРАВИЛО ДОБАВЛЕНО {rule['id']} "
+            print(f"[{now()}] RULE ADDED {rule['id']} "
                   f"«{rule.get('project') or '—'}»: {where} -> {rooms} "
-                  f"(метка {uid})")
+                  f"(mark {uid})")
         except Exception as e:
-            print(f"[{now()}] правило НЕ записано: {type(e).__name__}: {e}")
+            print(f"[{now()}] rule NOT written: {type(e).__name__}: {e}")
 
     # The decision record — atomic, and FIRST of the final steps: its presence
     # is what _close's idempotency checks, so it must land whole before pf is
@@ -1252,9 +1254,9 @@ def _seen(chat_id: int, message_id: int) -> bool:
 
 
 def control_question() -> str | None:
-    """Каждое SELFCHECK_EVERY-е обращение принципала — вернуть текст контрольного
-    вопроса (present), иначе None. Считает по файлу-счётчику. Полностью
-    защищено: любая осечка -> None, доставка сообщения не страдает."""
+    """On every SELFCHECK_EVERY-th address from the principal, return the text of
+    a control question (present), otherwise None. Counts by a counter file. Fully
+    guarded: any misfire -> None, message delivery does not suffer."""
     try:
         n = 0
         if C.SELFCHECK_COUNT.exists():
@@ -1330,7 +1332,7 @@ def due_reminders() -> None:
             retire(f, "capped-unacked")
             continue
 
-        again = "  (напоминаю ещё раз — лайкни, если увидел)" if tries else ""
+        again = "  (reminding again — like it if you saw it)" if tries else ""
         text = f"{C.REPLY_PREFIX} reminder: {r['text']}{again}"
         resp = None if C.DRY_RUN else call("sendMessage", chat_id=r["chat_id"], text=text)
         if C.DRY_RUN or (resp and resp.get("ok")):
@@ -1349,19 +1351,21 @@ def due_reminders() -> None:
 
 
 def nudge_unanswered() -> None:
-    """Сказать человеку, что его сообщение приняли, но НИКТО НЕ ВЗЯЛ.
+    """Tell the human that their message was accepted, but NOBODY TOOK IT UP.
 
-    Значок 👀 значит «сохранено, и будет отвечено». Это обещание. Если
-    ассистент не запущен, обещание некому исполнить, а человек об этом не
-    узнает: снаружи «его читают» и «его забыли» выглядят одинаково.
+    The 👀 mark means "stored, and it will be answered". That is a promise. If
+    the assistant is not running, there is no one to keep the promise, and the
+    human never learns it: from outside "being read" and "being forgotten" look
+    the same.
 
-    Поэтому мост, единственный, кто тут точно жив, говорит сам. ОДИН раз на
-    сообщение — иначе напоминание превращается в трезвон и его отключат.
+    So the bridge, the only thing here that is certainly alive, speaks for
+    itself. ONCE per message — otherwise the reminder turns into a clatter and
+    gets switched off.
     """
     cutoff = time.time() - C.NUDGE_AFTER_MIN * 60
     for f in sorted(C.REQUESTS.glob("*.json")):
         if f.name.startswith(("verdict-", "needsfile-", "reaction-", "control-")):
-            continue                       # это мои же записки, не его ожидание
+            continue                       # these are my own notes, not his waiting
         try:
             r = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
@@ -1372,15 +1376,15 @@ def nudge_unanswered() -> None:
         if not C.allowed(chat_id):
             continue
         mins = int((time.time() - f.stat().st_mtime) / 60)
-        text = (f"{C.REPLY_PREFIX} принято и лежит в ящике, но за {mins} мин "
-                f"никто не взял в работу. Значок 👀 обещал ответ — обещание "
-                f"пока не исполнено. Сообщение не потеряно.")
+        text = (f"{C.REPLY_PREFIX} accepted and sitting in the inbox, but in "
+                f"{mins} min nobody has picked it up. The 👀 mark promised a "
+                f"reply — the promise is not yet kept. The message is not lost.")
         if C.DRY_RUN or call("sendMessage", chat_id=chat_id, text=text,
                              reply_to_message_id=mid).get("ok"):
             r["nudged"] = now()
             f.write_text(json.dumps(r, ensure_ascii=False, indent=2),
                          encoding="utf-8")
-            print(f"[{now()}] НЕКОМУ ВЗЯТЬ: {f.stem}, {mins} мин, сказано в чат")
+            print(f"[{now()}] NOBODY TO TAKE IT: {f.stem}, {mins} min, told in chat")
 
 
 def sweep_old_files() -> None:
@@ -1405,22 +1409,23 @@ def sweep_old_files() -> None:
 
 def sweep_media(root: Path | None = None, budget: int | None = None,
                 pending: set[str] | None = None) -> list[str]:
-    """Вложения убираются по ПЕРЕПОЛНЕНИЮ, а не по сроку.
+    """Attachments are cleared by OVERFLOW, not by age.
 
-    Слово куратора: файл, присланный полгода назад, может быть нужен, а сорок
-    сегодняшних — нет. Возраст не знает, что важно; объём хотя бы честен.
+    The curator's word: a file sent half a year ago may be needed, while forty
+    of today's may not. Age does not know what matters; volume is at least
+    honest.
 
-    Три правила, и второе — самое важное:
+    Three rules, and the second is the most important:
 
-    1. Удаляется КАТАЛОГ запроса целиком. Вложения одного сообщения — это одна
-       вещь; выбросить половину значит оставить непонятное.
-    2. **Каталог запроса, на который ещё НЕ ОТВЕЧЕНО, не трогается никогда.**
-       Иначе уборка съест ровно то, что лежит и ждёт меня, и ящик покажет
-       ссылку в пустоту.
-    3. Каждое удаление печатается с размером. Молчаливая уборка неотличима от
-       пропажи, а пропажу потом объясняют чем угодно.
+    1. A request's DIRECTORY is removed whole. One message's attachments are one
+       thing; throwing away half means leaving something unintelligible.
+    2. **A request directory that has NOT YET BEEN ANSWERED is never touched.**
+       Otherwise the sweep eats exactly what is sitting and waiting for me, and
+       the inbox shows a link into the void.
+    3. Every deletion is printed with its size. A silent sweep is
+       indistinguishable from a loss, and a loss is later blamed on anything.
 
-    Возвращает список убранного — чтобы вызывающий мог не гадать.
+    Returns the list of what was cleared — so the caller need not guess.
     """
     root = root or C.MEDIA
     budget = C.MEDIA_BUDGET_BYTES if budget is None else budget
@@ -1439,23 +1444,24 @@ def sweep_media(root: Path | None = None, budget: int | None = None,
 
     if pending is None:
         pending = {p.stem for p in C.REQUESTS.glob("*.json")}
-    items.sort(key=lambda x: x[0])            # старое первым
+    items.sort(key=lambda x: x[0])            # oldest first
     removed: list[str] = []
     for _, size, d in items:
         if total <= budget:
             break
         if d.name in pending:
-            continue                          # ждёт ответа — не трогаем
+            continue                          # awaiting a reply — do not touch
         shutil.rmtree(d, ignore_errors=True)
         total -= size
         removed.append(d.name)
-        print(f"[{now()}] media sweep: убрано {d.name}, {size} байт, "
-              f"осталось {total} из {budget}")
+        print(f"[{now()}] media sweep: cleared {d.name}, {size} bytes, "
+              f"{total} of {budget} left")
     if total > budget:
-        # Сказать вслух, а не тихо смириться: место кончилось, а убрать нечего,
-        # потому что всё оставшееся ждёт ответа. Это про меня, не про диск.
-        print(f"[{now()}] media sweep: всё ещё {total} > {budget}, "
-              f"остальное ждёт ответа — разберите ящик")
+        # Say it out loud rather than quietly accept it: space has run out and
+        # there is nothing to clear, because everything left is awaiting a
+        # reply. This is about me, not the disk.
+        print(f"[{now()}] media sweep: still {total} > {budget}, "
+              f"the rest awaits a reply — clear the inbox")
     return removed
 
 
@@ -1552,8 +1558,8 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
 def outgoing_prefix(pol: dict[str, Any], item: dict[str, Any]) -> str:
     """Which signature this message carries.
 
-    ПУСТАЯ ПОДПИСЬ — ЭТО ВЫБОР, А НЕ ПРОПУСК. `or` would silently restore the
-    name: "" is falsy in Python, so a chat configured to speak without a
+    AN EMPTY SIGNATURE IS A CHOICE, NOT AN OMISSION. `or` would silently restore
+    the name: "" is falsy in Python, so a chat configured to speak without a
     signature would keep signing. Testing for the KEY distinguishes "not
     configured" from "configured to nothing", and that distinction is the whole
     of the setting.
@@ -1715,43 +1721,45 @@ def flush_outbox() -> None:
                 print(f"[{now()}] REFUSED (chats.json empty/broken?): {f.name} "
                       f"-> {chat_id}; NOT quarantining, waiting for a fix")
             continue
-        # ФАЙЛ В ОЧЕРЕДИ. Просили — «вышли файл сюда в чат»; до v1.3.0 мост
-        # умел только текст, и это был честный отказ, а не оплошность: файлы
-        # он ПРИНИМАЛ с v1.1.0, но не отдавал. Теперь оба направления.
+        # A FILE IN THE QUEUE. The ask was "send a file into this chat"; until
+        # v1.3.0 the bridge could only do text, and that was an honest refusal,
+        # not an oversight: it had ACCEPTED files since v1.1.0 but did not send
+        # them. Now both directions work.
         if item.get("file"):
             fp = Path(item["file"])
-            # ВОРОТА НА ФАЙЛ. Отправка файла — не письмо: он уходит целиком,
-            # его нельзя дописать вдогонку, и ошибиться комнатой тут дороже.
-            # Поэтому спрашивается всё, чего не покрывает стоячее правило.
+            # A GATE ON THE FILE. Sending a file is not a letter: it goes out
+            # whole, cannot be appended to afterwards, and getting the room
+            # wrong costs more here. So anything a standing rule does not cover
+            # is asked about.
             rule = rule_for(chat_id, fp)
             grant = None if rule else grant_for(chat_id, fp)
             if rule is None and grant is None:
-                print(f"[{now()}] ФАЙЛ НЕ ОТПРАВЛЕН: {fp.name} -> {chat_id} "
-                      f"не покрыт ни одним правилом — нужно предложение")
-                # ВОН ИЗ ОЧЕРЕДИ, А НЕ ПЕРЕИМЕНОВАТЬ НА МЕСТЕ. Первая
-                # версия оставляла отказанный файл в outbox под новым именем —
-                # и следующий обход переименовывал его снова, и снова, растя
-                # приставку и пытаясь отправить вечно. Ровно та же яма, что уже
-                # описана выше для сообщений длиннее 4096 знаков; я в неё сходил
-                # второй раз, в том же файле, в тот же день.
+                print(f"[{now()}] FILE NOT SENT: {fp.name} -> {chat_id} "
+                      f"covered by no rule — a proposal is needed")
+                # OUT OF THE QUEUE, NOT RENAMED IN PLACE. The first version left
+                # a refused file in the outbox under a new name — and the next
+                # pass renamed it again, and again, growing the prefix and trying
+                # to send forever. Exactly the same pit already described above
+                # for messages longer than 4096 characters; I fell into it a
+                # second time, in the same file, on the same day.
                 C.NEEDS_CONSENT.mkdir(exist_ok=True)
                 dest = C.NEEDS_CONSENT / f.name
                 f.rename(dest)
-                # И СКАЗАТЬ МНЕ, А НЕ ПОЛОЖИТЬ МОЛЧА. Первая версия просто
-                # убирала файл в сторону: ни строки в ящик, ни пути обратно.
-                # Получался тупик, построенный ради безопасности, — а тупик,
-                # о котором никто не знает, неотличим от потери.
+                # AND TELL ME, NOT SET IT ASIDE SILENTLY. The first version just
+                # moved the file aside: not a line to the inbox, no way back. It
+                # made a dead end built for safety's sake — and a dead end nobody
+                # knows about is indistinguishable from a loss.
                 rid = f"needsfile-{dest.stem}"
                 C.REQUESTS.joinpath(f"{rid}.json").write_text(json.dumps({
                     "at": now(), "chat_id": chat_id, "from": "GATE",
                     "from_id": None, "message_id": None,
-                    "text": f"файл ждёт решения: {fp}",
-                    "ask": (f"ФАЙЛ НЕ ОТПРАВЛЕН — нет правила.\n"
-                            f"    файл:  {fp}\n"
-                            f"    куда:  {chat_id}\n"
-                            f"Повесить на метку одной командой:\n"
+                    "text": f"file awaiting a decision: {fp}",
+                    "ask": (f"FILE NOT SENT — no rule.\n"
+                            f"    file:  {fp}\n"
+                            f"    to:    {chat_id}\n"
+                            f"Hang it on a mark with one command:\n"
                             f"    ./propose.py --batch '{fp}' --to {chat_id} "
-                            f"--why '<зачем>'"),
+                            f"--why '<why>'"),
                     "needs_consent_file": str(dest), "path": str(fp),
                     "target_chat": chat_id, "context": []},
                     ensure_ascii=False), encoding="utf-8")
@@ -1759,21 +1767,21 @@ def flush_outbox() -> None:
             r = send_file(chat_id, fp, item.get("text", "")[:1024],
                           as_photo=bool(item.get("as_photo")))
             if r.get("ok"):
-                # ЖУРНАЛ ОТПРАВЛЕННОГО ПО ПРАВИЛУ. Правило снимает вопрос
-                # ЗАРАНЕЕ, значит проверка остаётся только ПОСЛЕ — и она
-                # обязана быть, иначе стоячее разрешение становится слепой
-                # зоной. Одна строка на отправку, с номером правила.
+                # A LOG OF WHAT WAS SENT BY RULE. A rule settles the question IN
+                # ADVANCE, so the only check left is AFTERWARDS — and there must
+                # be one, or a standing permission becomes a blind spot. One line
+                # per send, with the rule's number.
                 who = (rule or grant).get("id")
-                kind = "правилу" if rule else "разрешению"
+                kind = "rule" if rule else "grant"
                 if grant:
                     spend_grant(who)
                 with C.ROOT.joinpath("sent_by_rule.log").open(
                         "a", encoding="utf-8") as lg:
                     lg.write(f"{now()}\t{who}\t{chat_id}\t"
                              f"{fp}\t{fp.stat().st_size}\n")
-                print(f"[{now()}] файл отправлен по {kind} "
+                print(f"[{now()}] file sent by {kind} "
                       f"{who} -> {chat_id}: {fp.name}, "
-                      f"{fp.stat().st_size} байт")
+                      f"{fp.stat().st_size} bytes")
                 # A FILE IS AN ANSWER TOO, AND THE EYE MUST COME OFF. The text
                 # branch closes the named request via clear_inbox; the file
                 # branch silently dropped the answers field — the file went out
@@ -1784,7 +1792,7 @@ def flush_outbox() -> None:
                 item["sent_at"] = now()
                 f.rename(C.SENT / f.name)
             else:
-                print(f"[{now()}] файл НЕ отправлен: {r.get('description')}")
+                print(f"[{now()}] file NOT sent: {r.get('description')}")
                 f.rename(C.SENT / f"failed-{f.name}")
             continue
 
@@ -1868,14 +1876,15 @@ def flush_outbox() -> None:
                                     "action": prop.get("action"),
                                     "one_line": prop.get("one_line") or text,
                                     "target_chat": prop.get("target_chat"),
-                                    # ПОЛЕ ТЕРЯЛОСЬ ЗДЕСЬ. Предложение писалось
-                                    # по белому списку полей, и "rule" в него не
-                                    # входило: правило доезжало до сообщения и
-                                    # умирало, не доходя до решения. Метка
-                                    # ставилась, вердикт был APPROVED, а в журнал
-                                    # не попадало НИЧЕГО — и молча, потому что
-                                    # ветка записи просто не срабатывала.
-                                    # Найдено на первом же живом правиле.
+                                    # THE FIELD WAS LOST HERE. The proposal was
+                                    # written by a whitelist of fields, and
+                                    # "rule" was not on it: the rule reached the
+                                    # message and died before reaching the
+                                    # decision. The mark was placed, the verdict
+                                    # was APPROVED, yet NOTHING reached the
+                                    # journal — and silently, because the writing
+                                    # branch simply never fired. Found on the
+                                    # very first live rule.
                                     "rule": prop.get("rule"),
                                     "batch": prop.get("batch"),
                                     "created": born.isoformat(timespec="seconds"),
@@ -1959,11 +1968,12 @@ def main() -> int:
                         sweep_proposals()
                     except Exception as e:
                         print(f"[{now()}] expiry sweep failed: {type(e).__name__}: {e}")
-                    # sweep_old_files БЫЛ НАПИСАН И НИ РАЗУ НЕ ВЫЗВАН. Его
-                    # докстрока обещала, что голос не копится вечно; обещание
-                    # держалось только тем, что мост молод и тридцати дней ещё
-                    # не прожил. Найдено 2026-08-22 при постройке уборки
-                    # вложений — искали одно, нашли соседнее.
+                    # sweep_old_files WAS WRITTEN AND NEVER ONCE CALLED. Its
+                    # docstring promised that voice notes do not pile up forever;
+                    # the promise held only because the bridge is young and has
+                    # not yet lived thirty days. Found 2026-08-22 while building
+                    # attachment cleanup — looking for one thing, found the one
+                    # next to it.
                     try:
                         nudge_unanswered()
                         sweep_old_files()
@@ -1973,11 +1983,12 @@ def main() -> int:
                 time.sleep(C.OUTBOX_SCAN)
         threading.Thread(target=pump, daemon=True).start()
 
-    # СТОРОЖ ПОДМЕНЫ СТОИТ ДО ПЕРВОГО СЕТЕВОГО ВЫЗОВА И ДО ЧТЕНИЯ СМЕЩЕНИЯ.
-    # Мост обслуживает ворота согласия — то есть решает, что считать
-    # разрешением. Работать неизвестно каким кодом ему хуже, чем не работать.
-    # Предупреждение здесь не годится: оно адресовано читателю, которого может
-    # не быть. Поэтому отказ, свой код возврата и durable-запись.
+    # THE TAMPER GUARD STANDS BEFORE THE FIRST NETWORK CALL AND BEFORE READING
+    # THE OFFSET. The bridge tends the consent gate — that is, it decides what
+    # counts as permission. Running as who-knows-what code is worse for it than
+    # not running at all. A warning here would not do: it is addressed to a
+    # reader who may not be there. So a refusal, its own return code, and a
+    # durable record.
     if not whoami and not C.DRY_RUN:
         try:
             import drift
@@ -1985,16 +1996,16 @@ def main() -> int:
             if not ok:
                 with drift.REFUSALS.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(detail, ensure_ascii=False) + "\n")
-                print(f"[{now()}] ОТКАЗ ПО ПОДМЕНЕ: {detail.get('reason')} — "
-                      f"не поднимаюсь. Подробности в {drift.REFUSALS.name}; "
-                      f"если состояние верное, одобрить: ./drift.py --approve")
+                print(f"[{now()}] REFUSED ON TAMPER: {detail.get('reason')} — "
+                      f"not starting up. Details in {drift.REFUSALS.name}; "
+                      f"if the state is correct, approve: ./drift.py --approve")
                 return drift.EXIT_DRIFT
-            print(f"  подмены нет: {detail['files']} файлов сходятся")
+            print(f"  no tampering: {detail['files']} files match")
         except Exception as e:
-            # Сломанный сторож — тоже отказ. Сторож, который при собственной
-            # поломке пропускает, охраняет только в хорошую погоду.
-            print(f"[{now()}] СТОРОЖ ПОДМЕНЫ СЛОМАН: {type(e).__name__}: {e} — "
-                  f"не поднимаюсь")
+            # A broken guard is also a refusal. A guard that lets things through
+            # when it breaks only guards in fair weather.
+            print(f"[{now()}] TAMPER GUARD BROKEN: {type(e).__name__}: {e} — "
+                  f"not starting up")
             return 91
 
     offset = int(C.OFFSET.read_text()) if C.OFFSET.exists() else 0

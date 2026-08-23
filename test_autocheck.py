@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Триггер контрольных вопросов: каждое SELFCHECK_EVERY-е даёт вопрос, осечка
-глотается, доставка не страдает. Вытаскивает control_question() из модуля с
-подменённым C — без сети и без запуска всего моста."""
+"""Control-question trigger: every SELFCHECK_EVERY-th call yields a question, a
+misfire is swallowed, delivery is unaffected. Pulls control_question() out of the
+module with C mocked out — no network and without running the whole bridge."""
 import re, subprocess, tempfile, types, pathlib
 
 def load():
@@ -21,9 +21,9 @@ def run():
             "/media/vitaly/SSD_1000GB/Projects/SelfCheck/selfcheck.py", "present"])
     pathlib.Path("/media/vitaly/SSD_1000GB/Projects/SelfCheck/state.json").unlink(missing_ok=True)
     got = [bool(cq()) for _ in range(10)]
-    # вопрос только на 5-м и 10-м
+    # question only on the 5th and 10th
     ok &= got == [False, False, False, False, True, False, False, False, False, True]
-    # осечка -> None, не падает
+    # misfire -> None, does not crash
     ns["C"].SELFCHECK_PRESENT = ["python3", "/no/such.py"]
     ns["C"].SELFCHECK_COUNT.write_text("4")
     ok &= cq() is None

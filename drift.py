@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 # Copyright 2026 Vitaly Reznik
 # SPDX-License-Identifier: Apache-2.0
-"""Сторож подмены: отказаться работать, если на диске не то, что одобрено.
+"""Tamper watchdog: refuse to run if what's on disk isn't what was approved.
 
-    ./drift.py --check     сверить и вернуть код возврата
-    ./drift.py --approve   записать нынешнее состояние как одобренное
+    ./drift.py --check     compare and return an exit code
+    ./drift.py --approve   record the current state as approved
 
-ЧЕСТНАЯ ГРАНИЦА, И ЕЁ НАДО НАЗВАТЬ ПЕРВОЙ. Этот сторож НЕ защищает от того, у
-кого есть доступ к каталогу моста: кто может править `tg_bridge.py`, тот может
-править и `approved_manifest.json`, и сам этот файл. Пакет с первого дня
-говорит, что скомпрометированная машина — это скомпрометированный бот, и здесь
-ничего не изменилось.
+THE HONEST BOUNDARY, AND IT MUST BE STATED FIRST. This watchdog does NOT protect
+against anyone with access to the bridge's directory: whoever can edit
+`tg_bridge.py` can also edit `approved_manifest.json` and this very file. From day
+one the package has said that a compromised machine is a compromised bot, and
+nothing has changed here.
 
-Что он ЛОВИТ: правку, которая прошла мимо переноса. Файл, поправленный на живом
-дереве «на минутку»; недокатившийся перенос; расхождение между тем, что
-испытано, и тем, что работает. Именно от этой породы отказов нас и поймали
-2026-08-21, и она случается без всякого злого умысла.
+What it DOES CATCH: an edit that slipped past a deployment. A file patched on the
+live tree "just for a minute"; a deployment that didn't fully land; a divergence
+between what was tested and what is running. This is exactly the kind of failure
+that caught us out on 2026-08-21, and it happens with no ill intent at all.
 
-ПОЧЕМУ ОТКАЗ, А НЕ ПРЕДУПРЕЖДЕНИЕ. Предупреждение адресовано читателю, которого
-может не быть. Мост, поехавший дальше с непроверенным кодом, обслуживает ворота
-согласия — то есть решает, что считать разрешением. Такому лучше не работать
-вовсе, чем работать неизвестно чем.
+WHY REFUSE RATHER THAN WARN. A warning is addressed to a reader who may not be
+there. A bridge that rolls on with unverified code is serving the gates of
+consent — that is, it decides what counts as permission. Something like that is
+better off not running at all than running as who-knows-what.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 import config as C
 
-EXIT_DRIFT = 90          # свой код: отказ по подмене НЕ должен путаться с падением
+EXIT_DRIFT = 90          # our own code: a tamper refusal must NOT be confused with a crash
 WATCHED = ("tg_bridge.py", "config.py", "propose.py", "pending.py", "react.py",
            "edit.py", "unreact.py", "seal.py", "gate_health.py", "drift.py",
            "rules.py", "test_gate.py", "test_attach.py")
@@ -41,13 +41,13 @@ REFUSALS = C.ROOT / "drift_refusals.jsonl"
 
 
 def manifest() -> dict[str, str]:
-    """Отпечатки того, что исполняется.
+    """Fingerprints of what is actually running.
 
-    СПИСКА ИМЁН НЕДОСТАТОЧНО, и это была дыра. Сторож, знающий только свой
-    перечень, не заметит НОВЫЙ файл — а Python сам подхватывает кое-что по
-    имени (`sitecustomize.py`), и любой новый модуль рядом может быть
-    импортирован завтрашней правкой. Поэтому берём и перечень, и ВСЕ .py в
-    каталоге: появление файла — такое же расхождение, как изменение.
+    A LIST OF NAMES IS NOT ENOUGH, and that was a hole. A watchdog that knows only
+    its own roster won't notice a NEW file — and Python itself picks up certain
+    things by name (`sitecustomize.py`), and any new module alongside it could be
+    imported by tomorrow's edit. So we take both the roster AND every .py in the
+    directory: a file appearing is just as much a divergence as one changing.
     """
     out = {}
     names = set(WATCHED) | {p.name for p in C.ROOT.glob("*.py")}
@@ -59,13 +59,13 @@ def manifest() -> dict[str, str]:
 
 
 def check() -> tuple[bool, dict]:
-    """(всё сходится, подробности). Отсутствие манифеста — НЕ повод пропустить."""
+    """(everything matches, details). A missing manifest is NOT a reason to wave it through."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cur = manifest()
     if not APPROVED.exists():
         return False, {"at": now, "reason": "NO_APPROVED_MANIFEST",
-                       "note": "одобренного состояния нет — сверять не с чем, "
-                               "и это отказ, а не разрешение по умолчанию"}
+                       "note": "there is no approved state — nothing to compare against, "
+                               "and that is a refusal, not a default allow"}
     old = json.loads(APPROVED.read_text(encoding="utf-8")).get("files", {})
     changed = {k: {"approved": old.get(k), "now": v}
                for k, v in cur.items() if old.get(k) != v}
@@ -81,26 +81,26 @@ def main(argv: list[str]) -> int:
     if "--approve" in argv:
         APPROVED.write_text(json.dumps(
             {"approved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-             "note": "записано при переносе; см. квитанцию переноса",
+             "note": "recorded at deployment; see the deployment receipt",
              "files": manifest()}, ensure_ascii=False, indent=1), encoding="utf-8")
-        print(f"одобрено {len(manifest())} файлов -> {APPROVED.name}")
+        print(f"approved {len(manifest())} files -> {APPROVED.name}")
         return 0
 
     ok, detail = check()
     if ok:
-        print(f"сходится: {detail['files']} файлов")
+        print(f"matches: {detail['files']} files")
         return 0
     with REFUSALS.open("a", encoding="utf-8") as f:
         f.write(json.dumps(detail, ensure_ascii=False) + "\n")
-    print(f"ОТКАЗ: {detail['reason']}")
+    print(f"REFUSED: {detail['reason']}")
     for k, v in (detail.get("changed") or {}).items():
-        print(f"    изменён  {k}\n        одобрено {str(v['approved'])[:16]}…"
-              f"\n        сейчас   {str(v['now'])[:16]}…")
+        print(f"    changed  {k}\n        approved {str(v['approved'])[:16]}…"
+              f"\n        now      {str(v['now'])[:16]}…")
     for k in (detail.get("removed") or []):
-        print(f"    ПРОПАЛ   {k}")
+        print(f"    GONE     {k}")
     for k in (detail.get("added") or []):
-        print(f"    появился {k}")
-    print(f"отказ записан в {REFUSALS.name}")
+        print(f"    appeared {k}")
+    print(f"refusal recorded in {REFUSALS.name}")
     return EXIT_DRIFT
 
 

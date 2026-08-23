@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Тесты v1.1.0 — вложения и подпись по чату.
+"""v1.1.0 tests — attachments and the per-chat signature.
 
-Offline: ни одного обращения к сети. Проверяется то, что можно проверить без
-Телеграма — разбор сообщения, обеззараживание имени, выбор подписи.
+Offline: not a single network call. It checks what can be checked without
+Telegram — parsing the message, sanitizing the filename, choosing the signature.
 
-Отдельная причина существования этого файла: 2026-08-21 картинка от третьего
-лица легла в ящик ПУСТЫМ запросом и была закрыта как «отвечать нечего».
-Первые два теста ниже — про то, чтобы это не повторилось.
+A separate reason this file exists: on 2026-08-21 an image from a third
+party landed in the inbox with an EMPTY request and was closed as "nothing to answer".
+The first two tests below are about making sure that does not happen again.
 """
 import os, sys, json, tempfile
 from pathlib import Path
@@ -22,54 +22,54 @@ def check(name, cond):
     if cond: ok += 1;  print(f"  ok   {name}")
     else:    fail += 1; print(f"  FAIL {name}")
 
-print("вложения — что мост вообще замечает")
+print("attachments — what the bridge even notices")
 photo = {"photo": [{"file_id": "s", "file_size": 100},
                    {"file_id": "l", "file_size": 9000}]}
 a = B.attachments_of(photo)
-check("картинка замечена", len(a) == 1 and a[0]["kind"] == "photo")
-check("берётся САМАЯ БОЛЬШАЯ из лестницы размеров", a[0]["file_id"] == "l")
-check("пустое сообщение не даёт вложений", B.attachments_of({}) == [])
-check("наклейка НЕ качается", B.attachments_of({"sticker": {"file_id": "x"}}) == [])
+check("image noticed", len(a) == 1 and a[0]["kind"] == "photo")
+check("the LARGEST of the size ladder is taken", a[0]["file_id"] == "l")
+check("an empty message yields no attachments", B.attachments_of({}) == [])
+check("a sticker is NOT downloaded", B.attachments_of({"sticker": {"file_id": "x"}}) == [])
 doc = {"document": {"file_id": "d", "file_name": "a.pdf", "file_size": 10}}
-check("документ замечен", B.attachments_of(doc)[0]["kind"] == "document")
+check("document noticed", B.attachments_of(doc)[0]["kind"] == "document")
 both = {**photo, **doc}
-check("картинка и документ вместе — оба", len(B.attachments_of(both)) == 2)
+check("image and document together — both", len(B.attachments_of(both)) == 2)
 
-print("\nимя файла — это ДАННЫЕ, а не путь")
-check("обход каталога срезан", B.safe_name("../../config.py", "x") == "config.py")
-check("абсолютный путь срезан", B.safe_name("/etc/passwd", "x") == "passwd")
-check("пустое имя даёт умолчание", B.safe_name("", "photo.jpg") == "photo.jpg")
-check("None даёт умолчание", B.safe_name(None, "photo.jpg") == "photo.jpg")
-check("кириллица сохраняется", B.safe_name("отчёт 2026.pdf", "x") == "отчёт 2026.pdf")
-check("экзотика заменяется", "$" not in B.safe_name("a$b;rm -rf.txt", "x"))
-check("имя из одних точек не проходит", B.safe_name("...", "d.bin") == "d.bin")
-check("длина ограничена", len(B.safe_name("я" * 400, "x")) <= 120)
+print("\nthe filename is DATA, not a path")
+check("directory traversal stripped", B.safe_name("../../config.py", "x") == "config.py")
+check("absolute path stripped", B.safe_name("/etc/passwd", "x") == "passwd")
+check("an empty name yields the default", B.safe_name("", "photo.jpg") == "photo.jpg")
+check("None yields the default", B.safe_name(None, "photo.jpg") == "photo.jpg")
+check("Cyrillic is preserved", B.safe_name("отчёт 2026.pdf", "x") == "отчёт 2026.pdf")
+check("exotic characters are replaced", "$" not in B.safe_name("a$b;rm -rf.txt", "x"))
+check("a name of only dots does not pass", B.safe_name("...", "d.bin") == "d.bin")
+check("length is capped", len(B.safe_name("я" * 400, "x")) <= 120)
 
-print("\nподпись — пустая строка есть ВЫБОР, а не пропуск")
+print("\nthe signature — an empty string is a CHOICE, not an omission")
 DEF = C.REPLY_PREFIX
-check("чат без настройки — общая подпись",
+check("chat with no setting — the shared signature",
       B.outgoing_prefix({}, {}) == DEF)
-check("чат с ПУСТОЙ подписью — пусто, а не общая",
+check("chat with an EMPTY signature — empty, not the shared one",
       B.outgoing_prefix({"reply_prefix": ""}, {}) == "")
-check("чат со своей подписью — своя",
+check("chat with its own signature — its own",
       B.outgoing_prefix({"reply_prefix": "Х:"}, {}) == "Х:")
-check("текст НА ВЫНОС подписан всегда, даже в чате без подписи",
+check("text SENT OUTWARD is always signed, even in a chat with no signature",
       B.outgoing_prefix({"reply_prefix": ""}, {"no_marker": True}) == C.COPY_PREFIX)
-check("ПЕРЕСКАЗ чужих слов подписан всегда",
+check("a RELAY of someone else's words is always signed",
       B.outgoing_prefix({"reply_prefix": ""}, {"relay": True}) == C.RELAY_PREFIX)
 
-print("\nсборка тела")
-check("с подписью — через пробел", B.compose("Л:", "текст") == "Л: текст")
-check("без подписи — БЕЗ ведущего пробела", B.compose("", "текст") == "текст")
-check("без подписи текст не тронут", B.compose("", " с краю ") == " с краю ")
+print("\nassembling the body")
+check("with a signature — separated by a space", B.compose("Л:", "текст") == "Л: текст")
+check("without a signature — NO leading space", B.compose("", "текст") == "текст")
+check("without a signature the text is untouched", B.compose("", " с краю ") == " с краю ")
 
-print("\nпорог размера объявлен и осмыслен")
-check("потолок положителен", C.MEDIA_MAX_BYTES > 0)
-check("потолок не выше того, что отдаёт Bot API",
+print("\nthe size threshold is declared and sensible")
+check("the ceiling is positive", C.MEDIA_MAX_BYTES > 0)
+check("the ceiling is no higher than what the Bot API serves",
       C.MEDIA_MAX_BYTES <= 20 * 1024 * 1024)
-check("каталог вложений отдельный", C.MEDIA.name == "media")
+check("attachments have their own directory", C.MEDIA.name == "media")
 
-print("\nуборка вложений — по переполнению, не по сроку")
+print("\nattachment cleanup — by overflow, not by age")
 import shutil, time as _t
 tmp = Path(tempfile.mkdtemp())
 def mk(name, size, age_s):
@@ -78,15 +78,15 @@ def mk(name, size, age_s):
     t = _t.time() - age_s
     os.utime(d, (t, t))
     return d
-mk("1-100", 400, 300)      # самый старый
+mk("1-100", 400, 300)      # the oldest
 mk("2-100", 400, 200)
-mk("3-100", 400, 100)      # самый свежий
+mk("3-100", 400, 100)      # the freshest
 rm = B.sweep_media(root=tmp, budget=10_000, pending=set())
-check("под бюджетом — не трогает ничего", rm == [])
+check("under budget — touches nothing", rm == [])
 rm = B.sweep_media(root=tmp, budget=900, pending=set())
-check("над бюджетом — убирает СТАРОЕ первым", rm == ["1-100"])
-check("свежее осталось", (tmp / "3-100").exists())
-check("после уборки укладывается в бюджет",
+check("over budget — removes the OLD first", rm == ["1-100"])
+check("the fresh one remains", (tmp / "3-100").exists())
+check("after cleanup it fits within budget",
       sum(f.stat().st_size for f in tmp.rglob("*") if f.is_file()) <= 900)
 
 tmp2 = Path(tempfile.mkdtemp())
@@ -95,39 +95,39 @@ for n in ("1-100", "2-100", "3-100"):
     t = _t.time() - (400 - int(n[0]) * 100)
     os.utime(d, (t, t))
 rm = B.sweep_media(root=tmp2, budget=900, pending={"1-100"})
-check("ЖДУЩЕЕ ОТВЕТА не удаляется, даже будучи самым старым",
+check("something AWAITING A REPLY is not deleted, even if it is the oldest",
       (tmp2 / "1-100").exists() and rm == ["2-100"])
-check("вместо него убрано следующее по старшинству", not (tmp2 / "2-100").exists())
+check("the next one by seniority is removed instead", not (tmp2 / "2-100").exists())
 
 tmp3 = Path(tempfile.mkdtemp())
 d = tmp3 / "9-100"; d.mkdir(); (d / "f.bin").write_bytes(b"x" * 5000)
 rm = B.sweep_media(root=tmp3, budget=100, pending={"9-100"})
-check("если всё ждёт ответа — не удаляет НИЧЕГО", rm == [] and d.exists())
-check("уборка на несуществующем каталоге не падает",
+check("if everything is awaiting a reply — deletes NOTHING", rm == [] and d.exists())
+check("cleanup on a nonexistent directory does not crash",
       B.sweep_media(root=tmp3 / "нет", budget=1, pending=set()) == [])
 for t_ in (tmp, tmp2, tmp3): shutil.rmtree(t_, ignore_errors=True)
 
-check("бюджет вложений объявлен", C.MEDIA_BUDGET_BYTES > C.MEDIA_MAX_BYTES)
+check("the attachment budget is declared", C.MEDIA_BUDGET_BYTES > C.MEDIA_MAX_BYTES)
 
-print("\nотправка файла наружу — сборка запроса, без сети")
+print("\nsending a file outward — building the request, no network")
 tmpf = Path(tempfile.mkdtemp()) / "отчёт.md"
 tmpf.write_bytes("данные".encode())
 r = B.send_file(1, Path("/нет/такого/файла.txt"))
-check("несуществующий файл — честный отказ, не исключение",
+check("a nonexistent file — an honest refusal, not an exception",
       r.get("ok") is False and "нет такого" in r.get("description", ""))
-check("функция отправки существует и берёт путь", callable(B.send_file))
+check("the send function exists and takes a path", callable(B.send_file))
 import inspect
 src = inspect.getsource(B.send_file)
-check("подпись режется по пределу Bot API (1024)", "1024" in src)
-check("документ и фото — разные методы",
+check("the caption is trimmed to the Bot API limit (1024)", "1024" in src)
+check("document and photo — different methods",
       "sendDocument" in src and "sendPhoto" in src)
-check("граница multipart выводится из содержимого, не случайна",
+check("the multipart boundary is derived from the content, not random",
       "sha256" in src and "boundary" in src)
 import shutil as _sh; _sh.rmtree(tmpf.parent, ignore_errors=True)
 
-print("\nворота на файлы — журнал правил")
-# Одобряющие правил/разрешений в этих тестах должны быть РЕАЛЬНЫМИ approver'ами
-# (rule_for/grant_for теперь сверяют членство, а не только непустоту id).
+print("\nthe gate on files — the rules log")
+# The approvers of rules/grants in these tests must be REAL approvers
+# (rule_for/grant_for now verify membership, not just a nonempty id).
 C.all_approvers = lambda: {1, 7, 500600700}
 base = Path(tempfile.mkdtemp())
 (base / "ok.md").write_text("x"); (base / "ok.zip").write_text("x")
@@ -135,85 +135,85 @@ other = Path(tempfile.mkdtemp()); (other / "чужой.md").write_text("x")
 APPROVED = [{"id": "R001", "chat_id": 42, "dir": str(base), "glob": "*.md",
              "added_by_user_id": 500600700}]
 
-check("пустой журнал НЕ РАЗРЕШАЕТ ничего",
+check("an empty log ALLOWS nothing",
       B.rule_for(42, base / "ok.md", []) is None)
-check("правило покрывает свой каталог и образец",
+check("a rule covers its own directory and pattern",
       (B.rule_for(42, base / "ok.md", APPROVED) or {}).get("id") == "R001")
-check("другой ОБРАЗЕЦ не покрыт", B.rule_for(42, base / "ok.zip", APPROVED) is None)
-check("другая КОМНАТА не покрыта", B.rule_for(99, base / "ok.md", APPROVED) is None)
-check("другой КАТАЛОГ не покрыт", B.rule_for(42, other / "чужой.md", APPROVED) is None)
-check("обход через .. НЕ проходит",
+check("a different PATTERN is not covered", B.rule_for(42, base / "ok.zip", APPROVED) is None)
+check("a different ROOM is not covered", B.rule_for(99, base / "ok.md", APPROVED) is None)
+check("a different DIRECTORY is not covered", B.rule_for(42, other / "чужой.md", APPROVED) is None)
+check("traversal via .. does NOT pass",
       B.rule_for(42, base / ".." / other.name / "чужой.md", APPROVED) is None)
 
 NOAPPROVER = [dict(APPROVED[0], added_by_user_id=None)]
-check("правило БЕЗ одобрившего не действует — подделка не проходит",
+check("a rule with NO approver has no effect — a forgery does not pass",
       B.rule_for(42, base / "ok.md", NOAPPROVER) is None)
 
-# Непустой, но ЧУЖОЙ id (не approver) тоже не проходит — порча файла
-# произвольным ненулевым id раньше принималась.
+# A nonempty but FOREIGN id (not an approver) also does not pass — corrupting a file
+# with an arbitrary nonzero id used to be accepted.
 NOTAPPROVER = [dict(APPROVED[0], added_by_user_id=999999)]
-check("правило от НЕ-approver id отвергнуто (не просто непустота)",
+check("a rule from a NON-approver id is rejected (not just nonemptiness)",
       B.rule_for(42, base / "ok.md", NOTAPPROVER) is None)
 
 EXPIRED = [dict(APPROVED[0], expires_at="2020-01-01T00:00:00+00:00")]
-check("истёкшее правило не действует", B.rule_for(42, base / "ok.md", EXPIRED) is None)
+check("an expired rule has no effect", B.rule_for(42, base / "ok.md", EXPIRED) is None)
 FUTURE = [dict(APPROVED[0], expires_at="2099-01-01T00:00:00+00:00")]
-check("неистёкшее действует", B.rule_for(42, base / "ok.md", FUTURE) is not None)
+check("a non-expired one has effect", B.rule_for(42, base / "ok.md", FUTURE) is not None)
 BROKEN = [dict(APPROVED[0], expires_at="позавчера")]
-check("нечитаемый срок трактуется НЕ В ПОЛЬЗУ отправки",
+check("an unreadable expiry is treated AGAINST sending",
       B.rule_for(42, base / "ok.md", BROKEN) is None)
 NODIR = [{"id": "R", "chat_id": 42, "added_by_user_id": 1}]
-check("правило без каталога не действует (нельзя «что угодно куда угодно»)",
+check("a rule with no directory has no effect (no 'anything, anywhere')",
       B.rule_for(42, base / "ok.md", NODIR) is None)
 import shutil as _s
 for t_ in (base, other): _s.rmtree(t_, ignore_errors=True)
 
-print("\nстроже: точные пути, список комнат, ярлык проекта")
+print("\nstricter: exact paths, room list, project label")
 b2 = Path(tempfile.mkdtemp())
 (b2 / "названный.md").write_text("x"); (b2 / "новый.md").write_text("x")
 EXACT = [{"id": "R010", "project": "work", "chats": [42, 43],
           "paths": [str(b2 / "названный.md")], "added_by_user_id": 7}]
-check("точный путь разрешён",
+check("an exact path is allowed",
       (B.rule_for(42, b2 / "названный.md", EXACT) or {}).get("id") == "R010")
-check("НОВЫЙ файл в той же папке НЕ разрешён — вот в чём строгость",
+check("a NEW file in the same folder is NOT allowed — that is the strictness",
       B.rule_for(42, b2 / "новый.md", EXACT) is None)
-check("вторая перечисленная комната тоже покрыта",
+check("the second listed room is covered too",
       B.rule_for(43, b2 / "названный.md", EXACT) is not None)
-check("неперечисленная комната не покрыта",
+check("an unlisted room is not covered",
       B.rule_for(44, b2 / "названный.md", EXACT) is None)
 
 LABEL = [{"id": "R011", "project": "work", "chats": [42],
           "dirs": [{"dir": str(b2), "glob": "*.md"}], "added_by_user_id": 7}]
-check("папка целиком — новый файл покрыт",
+check("the whole folder — a new file is covered",
       B.rule_for(42, b2 / "новый.md", LABEL) is not None)
 FAKE = [{"id": "R012", "project": "work", "chats": [42],
          "added_by_user_id": 7}]
-check("ЯРЛЫК проекта НЕ даёт разрешения сам по себе",
+check("the project LABEL does NOT grant permission on its own",
       B.rule_for(42, b2 / "новый.md", FAKE) is None)
 OLD14 = [{"id": "R001", "chat_id": 42, "dir": str(b2), "glob": "*.md",
           "added_by_user_id": 7}]
-check("форма v1.4 (chat_id/dir/glob) по-прежнему работает",
+check("the v1.4 form (chat_id/dir/glob) still works",
       B.rule_for(42, b2 / "новый.md", OLD14) is not None)
 import shutil as _s3; _s3.rmtree(b2, ignore_errors=True)
 
-print("\nправило доезжает от предложения до журнала")
+print("\na rule travels from proposal to log")
 import inspect
 src = inspect.getsource(B.flush_outbox)
-check("поле rule кладётся в ожидающее предложение", '"rule": prop.get("rule")' in src)
-# _close стал тонкой обёрткой (замок + идемпотентность) над _close_locked;
-# логика записи журнала/правила живёт в реализации, её и инспектируем.
+check("the rule field is placed into the pending proposal", '"rule": prop.get("rule")' in src)
+# _close became a thin wrapper (lock + idempotency) over _close_locked;
+# the log/rule-writing logic lives in the implementation, so that is what we inspect.
 csrc = inspect.getsource(B._close) + inspect.getsource(B._close_locked)
-check("журнал пишется только при APPROVED и только с uid",
+check("the log is written only on APPROVED and only with a uid",
       'verdict == "APPROVED"' in csrc and 'and uid' in csrc)
-check("в запись правила попадает одобривший", "added_by_user_id" in csrc)
+check("the approver goes into the rule record", "added_by_user_id" in csrc)
 
 import inspect as _i
 _src = _i.getsource(B.flush_outbox)
-check("отказанный файл УХОДИТ ИЗ ОЧЕРЕДИ, а не переименовывается на месте",
+check("a refused file LEAVES THE QUEUE rather than being renamed in place",
       "C.NEEDS_CONSENT / f.name" in _src and 'C.OUTBOX / f"needs-consent' not in _src)
-check("каталог ожидающих согласия объявлен", C.NEEDS_CONSENT.name == "needs_consent")
+check("the awaiting-consent directory is declared", C.NEEDS_CONSENT.name == "needs_consent")
 
-print("\nпачка — разовые разрешения по отпечатку")
+print("\nthe batch — one-time grants by fingerprint")
 bd = Path(tempfile.mkdtemp()); f1 = bd / "один.md"; f1.write_bytes(b"aaa")
 import hashlib as _h
 D1 = _h.sha256(b"aaa").hexdigest()
@@ -224,82 +224,82 @@ def put(gs): C.GRANTS.write_text(_j.dumps(gs), encoding="utf-8")
 
 put([{"id": "G001", "chat_id": 42, "sha256": D1,
       "added_by_user_id": 7, "used_at": None}])
-check("разрешение по отпечатку срабатывает",
+check("a grant by fingerprint fires",
       (B.grant_for(42, f1) or {}).get("id") == "G001")
-check("чужая комната не покрыта", B.grant_for(43, f1) is None)
+check("a foreign room is not covered", B.grant_for(43, f1) is None)
 
 f1.write_bytes("ПОДМЕНА".encode())
-check("ПОДМЕНА содержимого после метки — не проходит", B.grant_for(42, f1) is None)
+check("TAMPERING with the content after the mark — does not pass", B.grant_for(42, f1) is None)
 f1.write_bytes(b"aaa")
 
 put([{"id": "G002", "chat_id": 42, "sha256": D1,
       "added_by_user_id": 7, "used_at": "2026-08-22T00:00:00+00:00"}])
-check("потраченное разрешение больше не действует", B.grant_for(42, f1) is None)
+check("a spent grant no longer has effect", B.grant_for(42, f1) is None)
 put([{"id": "G003", "chat_id": 42, "sha256": D1,
       "added_by_user_id": None, "used_at": None}])
-check("разрешение без одобрившего не действует", B.grant_for(42, f1) is None)
+check("a grant with no approver has no effect", B.grant_for(42, f1) is None)
 
 put([{"id": "G004", "chat_id": 42, "sha256": D1,
       "added_by_user_id": 7, "used_at": None}])
 B.spend_grant("G004")
-check("потраченное помечается и второй раз не срабатывает",
+check("a spent one is marked and does not fire a second time",
       B.grant_for(42, f1) is None)
 C.GRANTS = saved
-check("потолок пачки объявлен и мал настолько, чтобы список читался",
+check("the batch ceiling is declared and small enough that the list stays readable",
       0 < C.BATCH_MAX <= 20)
 import shutil as _s4; _s4.rmtree(bd, ignore_errors=True)
 
-print("\nтупик, значок и сторож подмены")
+print("\ndead end, marker, and the tampering watchdog")
 import inspect as _i2
 _fo = _i2.getsource(B.flush_outbox)
-check("отказанный файл БУДИТ ассистента, а не лежит молча",
+check("a refused file WAKES the assistant rather than lying silent",
       "needsfile-" in _fo and "./propose.py --batch" in _fo)
 _nu = _i2.getsource(B.nudge_unanswered)
-check("напоминание шлётся ОДИН раз на сообщение", '"nudged"' in _nu)
-check("свои же записки не считаются ожиданием человека",
+check("the reminder is sent ONCE per message", '"nudged"' in _nu)
+check("one's own notes do not count as waiting on a human",
       '"verdict-"' in _nu and '"needsfile-"' in _nu)
-check("порог молчания объявлен и разумен", 5 <= C.NUDGE_AFTER_MIN <= 120)
+check("the silence threshold is declared and reasonable", 5 <= C.NUDGE_AFTER_MIN <= 120)
 
 import drift as _d
-check("у отказа по подмене СВОЙ код возврата", _d.EXIT_DRIFT not in (0, 1, 2))
-check("сторож следит за самим собой", "drift.py" in _d.WATCHED)
-check("сторож следит за воротами согласия", "tg_bridge.py" in _d.WATCHED)
+check("a tampering refusal has its OWN return code", _d.EXIT_DRIFT not in (0, 1, 2))
+check("the watchdog watches itself", "drift.py" in _d.WATCHED)
+check("the watchdog watches the consent gate", "tg_bridge.py" in _d.WATCHED)
 _saved = _d.APPROVED
 _d.APPROVED = Path(tempfile.mkdtemp()) / "нет.json"
 _okd, _det = _d.check()
-check("НЕТ одобренного состояния — это ОТКАЗ, а не разрешение по умолчанию",
+check("NO approved state — that is a REFUSAL, not a default allow",
       _okd is False and _det["reason"] == "NO_APPROVED_MANIFEST")
 _d.APPROVED = _saved
 
-print("\nбезопасность: потолок, заголовок, новый файл")
+print("\nsecurity: ceiling, header, new file")
 import inspect as _i3
 _ff = _i3.getsource(B.fetch_file)
-check("скачивание идёт КУСКАМИ, а не одним read()",
+check("the download goes in CHUNKS, not a single read()",
       "resp.read(" in _ff and "resp.read()" not in _ff)
-check("поток обрывается по потолку, недокачанное удаляется",
+check("the stream is cut off at the ceiling, the partial download is deleted",
       "got > cap" in _ff and "unlink" in _ff)
-check("размер спрашивается у API, а не только берётся из обновления",
+check("the size is asked of the API, not just taken from the update",
       'res.get("file_size")' in _ff)
 _sf = _i3.getsource(B.send_file)
-check("имя файла обеззараживается перед заголовком",
+check("the filename is sanitized before the header",
       'replace(\'"\'' in _sf or "replace('\"'" in _sf)
-check("перевод строки в имени тоже вычищается", '\\r' in _sf and '\\n' in _sf)
+check("a newline in the name is scrubbed too", '\\r' in _sf and '\\n' in _sf)
 import drift as _d2
 _dm = _i3.getsource(_d2.manifest)
-check("сторож видит ВСЕ .py, а не только свой перечень",
+check("the watchdog sees ALL .py files, not just its own list",
       'C.ROOT.glob("*.py")' in _dm)
 
-print("\nуведомление о записи описывает то, что СОБИРАЕТСЯ")
+print("\nthe write notice describes what it is ABOUT to do")
 _a = C.announce_text(111111111)
-check("сказано про запись переписки", "ПИШЕТСЯ В ФАЙЛ" in _a)
-check("сказано про ВЛОЖЕНИЯ — это добавилось в v1.1.0", "ВЛОЖЕНИЯ" in _a)
-check("сказано про расшифровку голоса", "расшифров" in _a)
-check("сказано, что наружу само ничего не уходит", "по своему почину" in _a)
+check("it mentions writing the conversation to a file", "ПИШЕТСЯ В ФАЙЛ" in _a)
+check("it mentions ATTACHMENTS — this was added in v1.1.0", "ВЛОЖЕНИЯ" in _a)
+check("it mentions voice transcription", "расшифров" in _a)
+check("it says nothing goes outward on its own initiative", "по своему почину" in _a)
 _g = C.announce_text(-5101395964)
-check("там, где подпись есть, о ней сказано", "ИИ(" in _g)
-check("там, где подписи нет, о ней НЕ говорится", "ИИ(" not in _a)
+check("where a signature exists, it is mentioned", "ИИ(" in _g)
+check("where there is no signature, it is not mentioned", "ИИ(" not in _a)
 _an = _i3.getsource(B.announce)
-check("ключ уведомления включает ОТПЕЧАТОК текста, а не только номер чата",
+check("the notice key includes the text FINGERPRINT, not just the chat number",
       "sha256" in _an and "key" in _an)
 
 print(f"\n{ok} passed, {fail} failed")

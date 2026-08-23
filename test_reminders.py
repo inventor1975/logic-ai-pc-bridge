@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Эскалация напоминаний: шлёт, пока не увидели (реакция), потом молчит.
+"""Reminder escalation: keeps sending until seen (a reaction), then goes quiet.
 
-Стенд без сети: config C и call() подменены. Проверяет четыре ветки,
-за которые куратор и волновался — «а как отменить, оно не будет долбить вечно?»
+Offline harness: config C and call() are stubbed out. Checks the four branches
+the curator worried about — "how do I cancel it, won't it nag forever?"
 """
 import json, re, sys, tempfile, types, pathlib
 from datetime import datetime, timezone, timedelta
@@ -40,23 +40,24 @@ def run():
 
     ok = True
 
-    # 1. ack: шлёт, tries=1, остаётся ждать
+    # 1. ack: sends, tries=1, stays waiting
     put("r1.json", at=past, chat_id=111, text="воды", ack=True, every_min=5, max_tries=3)
     due()
     r = json.loads((rem / "r1.json").read_text())
     ok &= r["tries"] == 1 and r["last_msg_id"] is not None and not (sent / "r1.json").exists()
 
-    # 2a. реакция ЧУЖАКА (approver=false) НЕ гасит — иначе посторонний в группе
-    #     молча снимал бы эскалацию, которую принципал не видел.
+    # 2a. an OUTSIDER's reaction (approver=false) does NOT silence it — otherwise a
+    #     bystander in the group could quietly cancel an escalation the principal
+    #     never saw.
     (rem / "r1.json").write_text(json.dumps({**r, "at": past}, ensure_ascii=False))
     (tmp / "reactions.jsonl").write_text(
         json.dumps({"chat_id": 111, "message_id": r["last_msg_id"],
                     "emoji": ["👍"], "approver": False}) + "\n",
         encoding="utf-8")
     n = len(log); due()
-    ok &= len(log) > n and not (sent / "r1.json").exists()   # шлёт снова, не гаснет
+    ok &= len(log) > n and not (sent / "r1.json").exists()   # sends again, doesn't go quiet
 
-    # 2b. реакция ПРИНЦИПАЛА (approver=true) -> замолкает
+    # 2b. the PRINCIPAL's reaction (approver=true) -> goes quiet
     r = json.loads((rem / "r1.json").read_text())
     (rem / "r1.json").write_text(json.dumps({**r, "at": past}, ensure_ascii=False))
     (tmp / "reactions.jsonl").write_text(
@@ -66,13 +67,13 @@ def run():
     n = len(log); due()
     ok &= len(log) == n and (sent / "r1.json").exists()
 
-    # 3. предохранитель
+    # 3. safety fuse
     log.clear()
     put("r2.json", at=past, chat_id=111, text="важное", ack=True, max_tries=2, tries=2)
     due()
     ok &= (sent / "r2.json").exists() and log and "сдаюсь" in log[-1]
 
-    # 4. обычное — разово
+    # 4. plain — one-shot
     log.clear()
     put("r3.json", at=past, chat_id=111, text="разово")
     due()

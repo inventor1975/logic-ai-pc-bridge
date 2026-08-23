@@ -47,18 +47,18 @@ def _principal_chat() -> int:
 
 
 def _rule_proposal(argv: list[str], target: int | None) -> int:
-    """Предложить СТОЯЧЕЕ ПРАВИЛО на отправку файлов, а не одну отправку.
+    """Propose a STANDING RULE for sending files, not a single send.
 
         ./propose.py --file-rule ~/Dropbox/Outbox --to -100200300 \
                      --glob "*.md" --why "approved documents for the review room"
 
-    Подтверждение переезжает с экземпляра на КЛАСС: куратор помечает один раз,
-    и дальше всё из этой папки в эту комнату уходит без вопроса. Всё прочее
-    по-прежнему спрашивается поштучно.
+    Approval moves from the instance to the CLASS: the principal marks once,
+    and from then on everything from this folder to this room goes without a
+    question. Everything else is still asked for one item at a time.
 
-    Предложение только ПРЕДЛАГАЕТ. В журнал правило вписывает мост и только по
-    метке, вместе с числовым идентификатором пометившего. Ассистент журнал не
-    пишет никогда.
+    A proposal only PROPOSES. The rule is written to the log by the bridge and
+    only on a mark, together with the numeric id of whoever marked it. The
+    assistant never writes to the log.
     """
     i = argv.index("--file-rule")
     try:
@@ -76,66 +76,68 @@ def _rule_proposal(argv: list[str], target: int | None) -> int:
     if "--why" in argv:
         j = argv.index("--why"); why = argv[j + 1]; del argv[j:j + 2]
     if target is None:
-        print("правилу обязательна комната: --to <chat_id>"); return 2
+        print("a rule needs a room: --to <chat_id>"); return 2
     if not directory.exists():
-        print(f"нет такого каталога: {directory}"); return 2
+        print(f"no such directory: {directory}"); return 2
 
     room = C.policy(target).get("_") or target
-    line = (f"РАЗРЕШИТЬ отправку файлов БЕЗ отдельного вопроса:\n"
-            f"    откуда:  {directory}\n"
-            f"    образец: {glob}\n"
-            f"    куда:    {room}\n"
-            f"    зачем:   {why or 'не сказано'}\n"
-            f"    до:      {until or 'без срока'}\n"
-            f"Это правило на КЛАСС отправок, а не на один файл. "
-            f"Всё, что в него не попадает, я по-прежнему спрошу.")
+    line = (f"ALLOW sending files WITHOUT asking each time:\n"
+            f"    from:    {directory}\n"
+            f"    pattern: {glob}\n"
+            f"    to:      {room}\n"
+            f"    why:     {why or 'not said'}\n"
+            f"    until:   {until or 'no expiry'}\n"
+            f"This is a rule for a CLASS of sends, not for one file. "
+            f"Anything that does not match it, I will still ask about.")
     C.OUTBOX.mkdir(exist_ok=True)
     name = f"propose-rule-{int(time.time())}.json"
     tag = _tag(name + str(target))
     C.OUTBOX.joinpath(name).write_text(json.dumps({
         "chat_id": _principal_chat(),
-        "text": (f"[{tag}] ПРЕДЛАГАЮ ПРАВИЛО:\n\n{line}\n\n"
-                 f"👍 — разрешить. 👎 — нет. Без метки не разрешено ничего; "
-                 f"предложение само истечёт через {C.PROPOSAL_TTL_HOURS} ч."),
-        "proposal": {"action": f"стоячее правило: {directory} -> {room}",
+        "text": (f"[{tag}] I PROPOSE A RULE:\n\n{line}\n\n"
+                 f"👍 — allow. 👎 — no. Without a mark nothing is allowed; "
+                 f"the proposal expires on its own after {C.PROPOSAL_TTL_HOURS}h."),
+        "proposal": {"action": f"standing rule: {directory} -> {room}",
                      "one_line": line, "target_chat": target,
                      "rule": {"chat_id": target, "dir": str(directory),
                               "glob": glob, "expires_at": until,
                               "why": why}},
     }, ensure_ascii=False), encoding="utf-8")
-    print(f"повешено правило {tag}: {name}")
+    print(f"hung rule {tag}: {name}")
     return 0
 
 
 def _tag(seed: str) -> str:
-    """Короткая метка предложения, ВИДИМАЯ человеку.
+    """A short proposal tag, VISIBLE to the human.
 
-    Номер сообщения Телеграм присваивает сам и НЕ ПОКАЗЫВАЕТ пользователю: он
-    есть в API и в моём логе, и его нет на экране. Ссылаться на него в разговоре
-    значит называть то, чего собеседник не видит, — ровно то, за что куратор и
-    поймал 2026-08-22. Поэтому метка кладётся В ТЕКСТ предложения: то, что я
-    называю, и то, что он видит, — одна и та же строка.
+    Telegram assigns the message number itself and DOES NOT SHOW it to the
+    user: it is in the API and in my log, and it is not on the screen.
+    Referring to it in conversation means naming something the other person
+    cannot see — exactly what the principal caught me on 2026-08-22. So the tag
+    is placed IN THE TEXT of the proposal: what I name and what he sees are one
+    and the same string.
     """
     return "П-" + hashlib.sha256(seed.encode()).hexdigest()[:4].upper()
 
 
 def _batch_proposal(argv: list[str], target: int | None) -> int:
-    """Повесить ПАЧКУ: одна метка — одна посылка в одну комнату.
+    """Hang a BATCH: one mark — one send to one room.
 
         ./propose.py --batch a.md b.pdf c.png --to -5101395964 [--why ...]
 
-    Три условия, и каждое закрывает свою дыру:
+    Three conditions, each of which closes its own hole:
 
-    ОДИН получатель. Смешивать комнаты в одной пачке запрещено — именно там
-    ошибка и прячется: четыре файла туда, один не туда, и заметно это будет
-    у получателя, а не у нас.
+    ONE recipient. Mixing rooms in a single batch is forbidden — that is
+    exactly where the mistake hides: four files to the right place, one to the
+    wrong one, and it will show up at the recipient's end, not at ours.
 
-    КАЖДЫЙ файл назван: имя, размер, отпечаток — прямо в тексте предложения.
-    Метка покрывает УВИДЕННОЕ, а не «те файлы, что он там собрал».
+    EVERY file is named: name, size, fingerprint — right in the text of the
+    proposal. The mark covers WHAT WAS SEEN, not "the files he pulled together
+    over there".
 
-    ПОТОЛОК в C.BATCH_MAX. Список, который нельзя прочесть глазами, есть штамп,
-    как его ни назови. Ответ на «много файлов» — не пачка побольше, а правило
-    на папку.
+    A CEILING at C.BATCH_MAX. A list that cannot be read with the eyes is a
+    rubber stamp, whatever you call it. The answer to "many files" is not a
+    bigger batch but a rule for the folder.
     """
     i = argv.index("--batch")
     del argv[i]
@@ -144,42 +146,43 @@ def _batch_proposal(argv: list[str], target: int | None) -> int:
         j = argv.index("--why"); why = argv[j + 1]; del argv[j:j + 2]
     paths = [Path(a).expanduser() for a in argv if not a.startswith("--")]
     if target is None:
-        print("пачке обязательна комната: --to <chat_id>"); return 2
+        print("a batch needs a room: --to <chat_id>"); return 2
     if not paths:
-        print("пачка пуста"); return 2
+        print("batch is empty"); return 2
     if len(paths) > C.BATCH_MAX:
-        print(f"в пачке {len(paths)} файлов, потолок {C.BATCH_MAX}. "
-              f"Список, который не прочесть глазами, — это штамп. "
-              f"На поток заводите правило: --file-rule <папка>")
+        print(f"batch has {len(paths)} files, ceiling is {C.BATCH_MAX}. "
+              f"A list that cannot be read with the eyes is a rubber stamp. "
+              f"For a steady stream, set up a rule: --file-rule <folder>")
         return 2
 
     files, lines = [], []
     for p_ in paths:
         if not p_.exists():
-            print(f"нет такого файла: {p_}"); return 2
+            print(f"no such file: {p_}"); return 2
         raw = p_.read_bytes()
         d = hashlib.sha256(raw).hexdigest()
         files.append({"name": p_.name, "path": str(p_.resolve()),
                       "bytes": len(raw), "sha256": d})
-        lines.append(f"    {p_.name}  —  {len(raw)} байт  —  {d[:16]}…")
+        lines.append(f"    {p_.name}  —  {len(raw)} bytes  —  {d[:16]}…")
 
     room = C.policy(target).get("_") or target
-    line = (f"ОТПРАВИТЬ ПАЧКОЙ в: {room}\n"
-            f"    зачем: {why or 'не сказано'}\n\n" + "\n".join(lines) +
-            f"\n\nОдобрено будет ИМЕННО ЭТО: отпечатки записаны, подмена "
-            f"файла после метки не пройдёт. Разрешение РАЗОВОЕ.")
+    line = (f"SEND AS A BATCH to: {room}\n"
+            f"    why: {why or 'not said'}\n\n" + "\n".join(lines) +
+            f"\n\nWhat gets approved is EXACTLY THIS: the fingerprints are "
+            f"recorded, swapping a file after the mark will not pass. The "
+            f"approval is ONE-TIME.")
     C.OUTBOX.mkdir(exist_ok=True)
     name = f"propose-batch-{int(time.time())}.json"
     tag = _tag(name + str(target))
     C.OUTBOX.joinpath(name).write_text(json.dumps({
         "chat_id": _principal_chat(),
-        "text": (f"[{tag}] ПРЕДЛАГАЮ ПАЧКУ ({len(files)}):\n\n{line}\n\n"
-                 f"👍 — отправить. 👎 — нет. Без метки не уйдёт ничего."),
-        "proposal": {"action": f"пачка {len(files)} файлов -> {room}",
+        "text": (f"[{tag}] I PROPOSE A BATCH ({len(files)}):\n\n{line}\n\n"
+                 f"👍 — send. 👎 — no. Without a mark nothing goes out."),
+        "proposal": {"action": f"batch of {len(files)} files -> {room}",
                      "one_line": line, "target_chat": target,
                      "batch": {"chat_id": target, "files": files, "why": why}},
     }, ensure_ascii=False), encoding="utf-8")
-    print(f"повешена пачка {tag}: {name} — {len(files)} файлов")
+    print(f"hung batch {tag}: {name} — {len(files)} files")
     return 0
 
 

@@ -1,238 +1,240 @@
 # LogicBridge — changelog
 
-Отпечаток в каждой строке берётся с файла, а не с намерения.
+The fingerprint in every line is taken from the file, not from intent.
 
 
 ## v1.1.0 — 2026-08-22
 
-Первая версия своей линии после `v1.0.0` (точная копия служащего дерева).
-Работа шла в `LogicBridge-dev`; служащее дерево при этом не менялось.
+First version of its own line after `v1.0.0` (an exact copy of the serving tree).
+Work happened in `LogicBridge-dev`; the serving tree stayed untouched throughout.
 
-**Вложения — файлы и картинки.** Мост читал только `text` и `caption`, поэтому
-картинка без подписи приходила ПУСТЫМ запросом. Это уже стоило потери: 2026-08-21
-снимок от третьего лица лёг в ящик пустотой и был закрыт как «отвечать нечего».
-Теперь картинки, документы, видео и аудио скачиваются в `media/<запрос>/`,
-попадают в запрос полем `files` с именем, размером, типом и отпечатком, а если
-подписи нет — запрос описывает сам себя и пустым не бывает.
+**Attachments — files and images.** The bridge read only `text` and `caption`, so
+an image without a caption arrived as an EMPTY request. This already cost us a loss:
+on 2026-08-21 a third-party photo landed in the inbox as emptiness and was closed as
+"nothing to answer." Now images, documents, video, and audio are downloaded into
+`media/<request>/`, enter the request via the `files` field with name, size, type,
+and fingerprint, and if there's no caption the request describes itself and is never
+empty.
 
-Граница доверия сдвинулась с текста на байты; чем это удержано — в `PROTOCOL.md`,
-включая правило «читать можно, запускать нельзя» и объяснение, почему список
-запрещённых расширений был рассмотрен и отвергнут.
+The trust boundary shifted from text to bytes; how that's held is in `PROTOCOL.md`,
+including the rule "reading is allowed, executing is not" and an explanation of why a
+blocklist of forbidden extensions was considered and rejected.
 
-**Подпись настраивается по чату, и пустая подпись работает.** Раньше
-`pol.get("reply_prefix") or C.REPLY_PREFIX` молча возвращал имя: пустая строка в
-питоне ложна. Теперь проверяется НАЛИЧИЕ ключа, и «настроено в пустоту»
-отличается от «не настроено». Обе наружные подписи — текст на вынос и пересказ
-чужих слов в переводе — выбираются раньше и не затронуты: текст, который
-поедет наружу, обязан говорить, чей он.
+**The signature is configurable per chat, and an empty signature works.** Previously
+`pol.get("reply_prefix") or C.REPLY_PREFIX` silently returned the name: an empty string
+is falsy in Python. Now the PRESENCE of the key is checked, and "configured to empty"
+is distinct from "not configured." Both outward signatures — outbound text and the
+relay of someone else's words in a translation — are chosen earlier and left untouched:
+text bound for the outside must say whose it is.
 
-Выделены две функции, чтобы решение можно было испытать, а не разглядывать:
-`outgoing_prefix(pol, item)` и `compose(prefix, text)`.
+Two functions were extracted so the decision can be tested rather than eyeballed:
+`outgoing_prefix(pol, item)` and `compose(prefix, text)`.
 
-**Испытано offline, без сети:**
+**Tested offline, no network:**
 
-    test_gate.py     20 passed, 0 failed   (ворота согласия, не тронуты)
-    test_attach.py   25 passed, 0 failed   (вложения, имя как данные, подпись)
+    test_gate.py     20 passed, 0 failed   (consent gate, untouched)
+    test_attach.py   25 passed, 0 failed   (attachments, name as data, signature)
 
-`test_attach.py` заведён этой версией.
+`test_attach.py` was created by this version.
 
 ## v1.2.0 — 2026-08-22
 
-**Уборка вложений по ПЕРЕПОЛНЕНИЮ, а не по сроку** (слово куратора: «не по
-сроку, а по переполнению, отведи сам сколько байт надо»). Бюджет 2 ГиБ:
-потолок на файл 20 МБ, значит сотня самых больших вложений или порядка
-семнадцати тысяч снимков нынешнего размера. Обычное употребление не упрётся
-никогда; зарвавшийся отправитель упрётся быстро и диска не съест.
+**Attachment cleanup by OVERFLOW, not by age** (the curator's word: "not by age, but
+by overflow; allot however many bytes you need yourself"). Budget 2 GiB: a per-file
+ceiling of 20 MB, so a hundred of the largest attachments or on the order of seventeen
+thousand images at the current size. Normal use will never hit the wall; a runaway
+sender hits it fast and won't eat the disk.
 
-Три правила уборки: каталог запроса удаляется целиком (вложения одного
-сообщения — одна вещь); **каталог запроса, на который ещё не отвечено, не
-трогается никогда**; каждое удаление печатается с размером, потому что
-молчаливая уборка неотличима от пропажи. Если убрать нечего, а место кончилось,
-мост говорит об этом вслух, а не смиряется молча.
+Three cleanup rules: a request's directory is deleted whole (one message's attachments
+are one thing); **a request directory that hasn't been answered yet is never touched**;
+every deletion is printed with its size, because silent cleanup is indistinguishable
+from loss. If there's nothing to clean up and space has run out, the bridge says so out
+loud rather than resigning itself in silence.
 
-**Найдено попутно и исправлено: `sweep_old_files` был написан и НИ РАЗУ НЕ
-ВЫЗВАН.** Его докстрока обещала, что голос не копится вечно; обещание держалось
-только тем, что мост молод и тридцати дней ещё не прожил. Теперь обе уборки
-зовутся на том же тике, что и истечение предложений.
+**Found along the way and fixed: `sweep_old_files` was written and NEVER CALLED.** Its
+docstring promised that voice doesn't pile up forever; the promise held only because the
+bridge is young and hasn't yet lived thirty days. Now both cleanups are called on the
+same tick as proposal expiry.
 
     test_gate.py     20 passed, 0 failed
-    test_attach.py   34 passed, 0 failed   (+9 на уборку)
+    test_attach.py   34 passed, 0 failed   (+9 for cleanup)
 
 ## v1.3.0 — 2026-08-22
 
-**Мост научился ОТДАВАТЬ файлы.** С v1.1.0 он их принимал, но не отправлял;
-на просьбу «вышли файл в чат» честный ответ был «не умею». Теперь оба
-направления.
+**The bridge learned to SEND files.** Since v1.1.0 it received them but didn't send;
+to the request "send a file to the chat" the honest answer was "I can't." Now both
+directions.
 
-`send_file(chat_id, path, caption, as_photo)` — своя сборка multipart, без
-сторонних библиотек; отдельная функция, а не параметр к `call`, потому что
-обычный вызов кодирует поля urlencoded и файл так не передать. Смешивать два
-способа говорить с одним API значит прятать различие, которое потом укусит.
+`send_file(chat_id, path, caption, as_photo)` — its own multipart assembly, no
+third-party libraries; a separate function rather than a parameter to `call`, because
+an ordinary call encodes fields urlencoded and a file can't be passed that way. Mixing
+two ways of talking to one API means hiding a difference that will bite later.
 
-Подпись обрезается до 1024 знаков ЗАРАНЕЕ — столько разрешает Bot API. Иначе
-сервер отказал бы целиком, и файл не ушёл бы из-за лишней строки текста.
+The caption is truncated to 1024 characters UP FRONT — that's what the Bot API allows.
+Otherwise the server would reject the whole thing, and the file wouldn't go out because
+of an extra line of text.
 
-В очереди исходящих появилось поле `file`; неудача переименовывает файл очереди
-в `failed-*`, а не молчит.
+The outgoing queue gained a `file` field; a failure renames the queue file to `failed-*`
+rather than staying silent.
 
     test_gate.py     20 passed, 0 failed
     test_attach.py   39 passed, 0 failed   (+5)
 
 ## v1.4.0 — 2026-08-22
 
-**Ворота на отправку файлов, и подтверждение переезжает с экземпляра на
-ПРАВИЛО.** Слово куратора: «файлы — это уже не буковки, надо от дурака
-защищаться… но каждый раз подтверждение — это геморрой. Надо по журналу правил:
-знакомый класс отправляй, что-то новое спроси, ранее согласованное —
-вообще не спрашивай».
+**A gate on sending files, and confirmation moves from the instance to the RULE.**
+The curator's word: "files aren't just little letters anymore, we need to guard against
+a fool… but confirming every single time is a pain. Go by a rule log: send a familiar
+class, ask about something new, and don't ask at all about what was agreed before."
 
-Устройство. Пустой журнал не разрешает НИЧЕГО — по умолчанию спрашивается всё.
-Правило связывает три вещи, и все три обязательны: комнату-получателя,
-каталог-источник и образец имени. Правила «что угодно куда угодно» в этом
-формате просто НЕ ВЫРАЗИТЬ — поле обязательное, а запрет, который нельзя обойти
-по забывчивости, надёжнее запрета, о котором надо помнить.
+How it works. An empty log permits NOTHING — by default everything is asked. A rule
+binds three things, all three required: the recipient room, the source directory, and
+a name pattern. A rule of "anything anywhere" simply CAN'T BE EXPRESSED in this format —
+the field is mandatory, and a prohibition that can't be bypassed through forgetfulness
+is more reliable than one you have to remember.
 
-**Правило не может появиться от ассистента.** Оно вписывается мостом и только по
-метке куратора, вместе с его числовым идентификатором, самой меткой и номером
-предложения. Правило без одобрившего пропускается со скандалом в лог. Тот же
-изготавливает объект, который её ограничивает.
+**A rule cannot originate from the assistant.** It is written by the bridge and only on
+the curator's mark, together with his numeric identifier, the mark itself, and the
+proposal number. A rule without an approver is skipped with a scandal in the log. The
+same one produces the object that constrains it.
 
-Путь схлопывается до настоящего перед сравнением, поэтому
-`разрешённая-папка/../../что угодно` не проходит. Нечитаемый срок годности
-трактуется НЕ в пользу отправки.
+The path is collapsed to its real form before comparison, so
+`allowed-folder/../../anything` doesn't pass. An unreadable expiry date is interpreted
+NOT in favor of sending.
 
-Правило снимает вопрос ЗАРАНЕЕ — значит проверка остаётся только ПОСЛЕ, и она
-обязана быть: каждая отправка по правилу пишет строку в `sent_by_rule.log` с
-номером правила. Иначе стоячее разрешение становится слепой зоной.
+A rule removes the question UP FRONT — which means the check remains only AFTER, and it
+must exist: every send by a rule writes a line to `sent_by_rule.log` with the rule
+number. Otherwise a standing permission becomes a blind spot.
 
-`./propose.py --file-rule <каталог> --to <комната> [--glob] [--why] [--until]`
+`./propose.py --file-rule <directory> --to <room> [--glob] [--why] [--until]`
 
     test_gate.py     20 passed, 0 failed
-    test_attach.py   50 passed, 0 failed   (+11 на ворота, включая обход через ..)
+    test_attach.py   50 passed, 0 failed   (+11 for the gate, including the bypass via ..)
 
 ## v1.7.0 — 2026-08-22
 
-**Пачка: одна метка — одна посылка.** Куратор: «если надо отправить кому-то пять
-файлов, ты спросишь один раз или на все пять?» Спрашивал пять, и это издевательство.
+**Batch: one mark — one parcel.** The curator: "if you need to send someone five files,
+will you ask once or for all five?" It asked five times, and that's torment.
 
-Но «одна метка на список» просто так делать было нельзя: в этом же файле с
-первого дня записано, что метка под списком из пяти дел становится штампом в
-течение недели. Разница, которая всё решает: пять РАЗНЫХ дел под одной меткой —
-штамп; пять файлов ОДНОЙ посылки в ОДНУ комнату — одно дело с пятью частями.
-Единица согласия — та, о которой человек думает, а не число байт.
+But "one mark per list" couldn't just be done: this very file has recorded since day one
+that a mark under a list of five tasks becomes a rubber stamp within a week. The
+difference that decides everything: five DIFFERENT tasks under one mark is a rubber
+stamp; five files of ONE parcel to ONE room is one task with five parts. The unit of
+consent is the one a person thinks about, not a byte count.
 
-Три условия, каждое закрывает свою дыру:
+Three conditions, each closing its own hole:
 
-    один получатель на пачку   смешивать комнаты запрещено — там ошибка и прячется
-    каждый файл назван         имя, размер, отпечаток прямо в предложении;
-                               метка покрывает УВИДЕННОЕ
-    разовое и по отпечатку     подмена файла после метки не проходит,
-                               второй раз то же разрешение не сработает
+    one recipient per batch     mixing rooms is forbidden — that's where the error hides
+    every file named            name, size, fingerprint right in the proposal;
+                                the mark covers WHAT WAS SEEN
+    one-time and by fingerprint swapping the file after the mark doesn't pass,
+                                the same permission won't fire a second time
 
-Потолок `batch_max` = 10. Список, который нельзя прочесть глазами, есть штамп,
-как его ни назови; на поток заводится ПРАВИЛО на папку, а не пачка побольше.
+The ceiling `batch_max` = 10. A list you can't read with your eyes is a rubber stamp,
+whatever you call it; for a stream you set up a RULE on a folder, not a bigger batch.
 
-Разовые разрешения живут в `grants.json` ОТДЕЛЬНО от правил намеренно: правило
-описывает класс и действует впредь, разрешение названо отпечатком и тратится
-один раз. В одном файле их через месяц не отличить.
+One-time permissions live in `grants.json` SEPARATELY from rules by design: a rule
+describes a class and acts henceforth, a permission is named by fingerprint and is spent
+once. In one file you couldn't tell them apart a month later.
 
-`./propose.py --batch f1 f2 … --to <комната> [--why ...]`
+`./propose.py --batch f1 f2 … --to <room> [--why ...]`
 
     test_gate.py     20 passed, 0 failed
-    test_attach.py   69 passed, 0 failed   (+7 на пачку, включая подмену и повтор)
+    test_attach.py   69 passed, 0 failed   (+7 for the batch, including swap and replay)
 
 ## v1.8.0 — 2026-08-22
 
-Три вещи по слову куратора «все три».
+Three things, on the curator's word "all three."
 
-**Тупик, который я сам построил утром.** Отказанный файл ложился в
-`needs_consent/` и там лежал: ни строки в ящик, ни пути обратно. Тупик, о
-котором никто не знает, неотличим от потери. Теперь отказ БУДИТ ассистента —
-запрос в ящике называет файл, комнату и готовую команду, чтобы повесить его на
-метку.
+**A dead end I built myself this morning.** A refused file landed in `needs_consent/`
+and just sat there: not a line to the inbox, no way back. A dead end no one knows about
+is indistinguishable from loss. Now a refusal WAKES the assistant — the request in the
+inbox names the file, the room, and a ready-made command to hang it on a mark.
 
-**Значок больше не врёт.** 👀 значит «сохранено, и будет отвечено» — это
-обещание, и если ассистент не запущен, исполнить его некому, а человек снаружи
-не отличит «читают» от «забыли». Мост, единственный, кто тут точно жив, говорит
-сам: «принято, но за N минут никто не взял в работу». ОДИН раз на сообщение —
-иначе это трезвон, который отключат. Порог 20 минут.
+**The badge no longer lies.** 👀 means "saved, and will be answered" — that's a promise,
+and if the assistant isn't running, there's no one to keep it, while a person on the
+outside can't tell "being read" from "forgotten." The bridge, the only one here that's
+definitely alive, speaks for itself: "received, but in N minutes no one has picked it
+up." ONCE per message — otherwise it's a racket that gets muted. Threshold 20 minutes.
 
-**Сторож подмены — отказ, а не предупреждение** (`drift.py`, §7 решения
-владельца). Мост сверяет отпечатки тринадцати своих файлов с одобренным
-состоянием ДО первого сетевого вызова и не поднимается при расхождении: свой код
-возврата 90, запись в `drift_refusals.jsonl`. Отсутствие одобренного состояния —
-тоже отказ, а не разрешение по умолчанию. Сломанный сторож — отказ (код 91):
-сторож, пропускающий при собственной поломке, охраняет только в хорошую погоду.
-Сторож следит и за собой тоже.
+**The tamper watchdog refuses rather than warns** (`drift.py`, §7 of the owner's
+decision). The bridge checks the fingerprints of its thirteen files against the approved
+state BEFORE the first network call and won't come up on a mismatch: its own return code
+90, a record in `drift_refusals.jsonl`. The absence of an approved state is also a
+refusal, not a permit by default. A broken watchdog is a refusal (code 91): a watchdog
+that lets things through when it's itself broken guards only in good weather. The
+watchdog watches itself too.
 
-Честная граница названа в самом файле: он НЕ защищает от того, у кого есть
-доступ к каталогу. Он ловит правку, прошедшую мимо переноса, — ровно ту породу
-отказов, за которую нас поймали 2026-08-21.
+The honest boundary is named in the file itself: it does NOT protect against someone who
+has access to the directory. It catches an edit that slipped past the transfer — exactly
+the breed of failure we got caught on 2026-08-21.
 
     test_gate.py     20 passed, 0 failed
     test_attach.py   77 passed, 0 failed   (+8)
 
 ## v1.9.0 — 2026-08-23
 
-Проход по коду несколькими линзами (гонки, тихие отказы, корректность). Одиннадцать
-починок класса «сделал ≠ записал» и «тихая потеря».
+A pass over the code through several lenses (races, silent failures, correctness).
+Eleven fixes of the "did ≠ recorded" and "silent loss" class.
 
-**Значок перестал врать сильнее.** Файловый ответ с `answers` теперь закрывает
-названную заявку (в файловой ветке `flush_outbox` не было `clear_inbox` — файл
-уходил, а 👀 висел). `.react.json` больше не гасит заявку, если метка НЕ легла
-(невалидный emoji/сеть): «отвечено» поверх пустоты недопустимо. `clear_inbox`
-ставит метку ДО переноса в `served`, а не после.
+**The badge lies even less.** A file reply with `answers` now closes the named request
+(the file branch of `flush_outbox` had no `clear_inbox` — the file went out but the 👀
+stayed hanging). `.react.json` no longer clears a request if the mark DIDN'T land
+(invalid emoji/network): "answered" on top of emptiness is inadmissible. `clear_inbox`
+sets the mark BEFORE moving to `served`, not after.
 
-**Квитанцию напоминания засчитываем только от одобряющего** (`_seen`). Раньше
-эскалацию гасила ЛЮБАЯ реакция — в группе посторонний мог снять её молча. Теперь
-требуется `approver`; заодно отсекаются собственные метки моста.
+**A reminder's receipt counts only from an approver** (`_seen`). Previously ANY reaction
+cleared the escalation — in a group an outsider could silently remove it. Now an
+`approver` is required; the bridge's own marks are cut off at the same time.
 
-**Рассылка не падает от наивной даты.** `rule_for` ловил только `ValueError`, а
-срок без таймзоны даёт `TypeError` — он обрывал ВСЕ отправки каждый проход.
-Нормализуем к UTC.
+**Dispatch doesn't crash on a naive date.** `rule_for` caught only `ValueError`, but a
+deadline without a timezone raises `TypeError` — it aborted ALL sends every pass. We
+normalize to UTC.
 
-**Тихие потери — вслух.** Провал скачивания голоса больше не голый `return`:
-лог + слово отправителю. Падение рабочего потока печатает трейсбек (`_guarded`),
-а не уносит сообщение молча. Битый/чужой `outbox` уходит в `outbox/rejected/`
-вместо вечного ретрая — с защитой, что сломанный `chats.json` (пустой список)
-НЕ караним. Битый `chats.json`/`settings.json` теперь называет причину.
+**Silent losses — out loud.** A failed voice download is no longer a bare `return`: a
+log entry plus a word to the sender. A worker-thread crash prints a traceback
+(`_guarded`) rather than carrying the message off silently. A corrupt/foreign `outbox`
+goes to `outbox/rejected/` instead of retrying forever — with a safeguard that a broken
+`chats.json` (empty list) is NOT penalized. A broken `chats.json`/`settings.json` now
+names the reason.
 
-**Мелкое, но важное.** `log_line` под замком — длинные строки из потоков больше
-не переслаиваются в битый JSONL. `from_principal` не поднимает права на
-сообщении без отправителя (`is not None` вперёд).
+**Small but important.** `log_line` is under a lock — long lines from threads no longer
+interleave into corrupt JSONL. `from_principal` doesn't elevate privileges on a message
+without a sender (`is not None` first).
 
 ## v1.10.0 — 2026-08-23
 
-**Один замок и атомарная запись на `grants.json` / `rules.json`.** Эти списки
-правятся read-modify-write из ДВУХ потоков: главный (`_close` через `decide`) и
-pump (`spend_grant`, а также `sweep_proposals`→`_close`). Без общего замка два
-потока читали один список, каждый дописывал своё и писал поверх — правка
-терялась. Худшее следствие: `spend_grant` ставит `used_at`, а параллельный
-`_close` затирает список без него — разовое согласие воскресало, файл мог уйти
-повторно без нового «да». Теперь `_STATE_LOCK` (RLock) сериализует правки, а
-`_atomic_write` (tmp → `os.replace`) не даёт читателю увидеть полу-файл.
+**One lock and atomic writes on `grants.json` / `rules.json`.** These lists are edited
+read-modify-write from TWO threads: the main one (`_close` via `decide`) and the pump
+(`spend_grant`, and also `sweep_proposals`→`_close`). Without a shared lock, two threads
+read the same list, each appended its own and wrote over the top — an edit was lost. The
+worst consequence: `spend_grant` sets `used_at`, while a parallel `_close` overwrites the
+list without it — a one-time consent came back to life, the file could go out again
+without a new "yes." Now `_STATE_LOCK` (RLock) serializes edits, and `_atomic_write`
+(tmp → `os.replace`) keeps a reader from seeing a half-file.
 
-**Решение — ровно одно.** Метка (`decide`) и истечение (`sweep_proposals`)
-гонятся закрыть одно предложение; кто первым взял замок — решает, проигравший
-видит уже записанный `decided/` и выходит. Нет смешанного состояния, где журнал
-говорит EXPIRED, а разрешение создано. `test_locks.py` это закрепляет.
+**Exactly one decision.** The mark (`decide`) and expiry (`sweep_proposals`) race to
+close one proposal; whoever takes the lock first decides, the loser sees the
+already-written `decided/` and exits. There's no mixed state where the log says EXPIRED
+but a permission was created. `test_locks.py` locks this in.
 
 ## v1.11.0 — 2026-08-23
 
-**Одобряющий правила/разрешения — РЕАЛЬНЫЙ approver, не просто непустое поле.**
-`rule_for`/`grant_for` проверяли лишь НЕПУСТОТУ `added_by_user_id`; произвольный
-ненулевой id (порча `grants.json`/`rules.json`, ручная правка мимо ворот) раньше
-проходил. Теперь id обязан быть approver'ом хотя бы одного чата
-(`config.all_approvers()`). Backward-compatible: живые правила от принципала
-проходят; правило «папка→группа», одобренное в приватном чате, не ломается.
-`test_attach` закрепляет: id не из approvers отвергнут.
+**The approver of a rule/permission is a REAL approver, not just a non-empty field.**
+`rule_for`/`grant_for` checked only the NON-EMPTINESS of `added_by_user_id`; an arbitrary
+nonzero id (corruption of `grants.json`/`rules.json`, a manual edit past the gate) used
+to pass. Now the id must be an approver of at least one chat (`config.all_approvers()`).
+Backward-compatible: live rules from the principal pass; a "folder→group" rule approved
+in a private chat doesn't break. `test_attach` locks it in: an id not among the approvers
+is rejected.
 
 ## v1.12.0 — 2026-08-23
 
-**Список открытых глаз на КАЖДОЙ заявке (`open_eyes`).** 👀 = не обработано,
-принципал по ним ориентируется. Отчёт о висящем видел только свежие в `requests/`,
-а уехавшие в `served` за 6ч выпадали из виду — за долгую сессию так накопилось
-больше сотни незакрытых. Теперь `open_eye_backlog(chat_id)` считает ВЕСЬ открытый
-набор (адресованные, получившие 👀, МИНУС закрытые через `answers`), из файлов, с
-кэшем 10с, и поле `open_eyes=[id…]` кладётся в каждую заявку ассистенту — стрелявший
-перед глазами на следующем сообщении и закрывается, а не теряется. Close-path не тронут.
+**A list of open eyes on EVERY request (`open_eyes`).** 👀 = not handled; the principal
+navigates by them. The pending report saw only the fresh ones in `requests/`, while those
+moved to `served` after 6h fell out of sight — over a long session more than a hundred
+unclosed ones piled up that way. Now `open_eye_backlog(chat_id)` counts the WHOLE open
+set (addressed, given 👀, MINUS those closed via `answers`), from files, with a 10s cache,
+and the `open_eyes=[id…]` field is placed in every request to the assistant — the one that
+fired is before your eyes on the next message and gets closed rather than lost. The
+close-path is untouched.
