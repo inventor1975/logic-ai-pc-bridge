@@ -26,6 +26,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -144,6 +145,20 @@ def log_line(rec: dict[str, Any]) -> None:
             f.write(line)
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via a temp file + os.replace, so a reader sees either the old file
+    whole or the new file whole, but NEVER a half-written one.
+
+    grants.json/rules.json are written from the pump and read from the pump too
+    (rule_for/grant_for in flush_outbox) and from the main thread. A plain
+    write_text is truncate then write; a reader landing mid-write got broken
+    JSON. os.replace is atomic on one filesystem.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def announce(chat_id: int) -> None:
     """Уведомление о записи — один раз на чат, ДО того как из него что-то ляжет
     на диск.
@@ -259,6 +274,13 @@ _WHISPER_LOCK = threading.Lock()
 _WHISPER = [None]
 # Serialises appends to the chat log from the main loop and worker threads.
 _LOG_LOCK = threading.Lock()
+# ONE LOCK ON THE STATE JOURNALS. grants.json and rules.json are read-modify-
+# written from TWO threads: the main loop (_close via decide) and the pump
+# (spend_grant, and sweep_proposals->_close). Without a shared lock two threads
+# read one list, each appends its own change and writes over the other — a lost
+# update. Worst case: spend_grant sets used_at and _close overwrites the list
+# without it, so one-time consent RESURRECTS. RLock: _close nests under it.
+_STATE_LOCK = threading.RLock()
 
 
 def rule_for(chat_id: int, path: Path,
@@ -366,14 +388,19 @@ def grant_for(chat_id: int, path: Path) -> dict[str, Any] | None:
 
 
 def spend_grant(gid: str) -> None:
-    """Потратить разрешение. Разовое значит разовое."""
-    gs = C.grants()
-    for g in gs:
-        if g.get("id") == gid and not g.get("used_at"):
-            g["used_at"] = now()
-            C.GRANTS.write_text(json.dumps(gs, ensure_ascii=False, indent=1),
-                                encoding="utf-8")
-            return
+    """Потратить разрешение. Разовое значит разовое.
+
+    Under _STATE_LOCK and atomic: otherwise a concurrent _close (main thread)
+    appending a new grant would overwrite this used_at, and one-time consent
+    would resurrect — the file could be sent again without a fresh yes.
+    """
+    with _STATE_LOCK:
+        gs = C.grants()
+        for g in gs:
+            if g.get("id") == gid and not g.get("used_at"):
+                g["used_at"] = now()
+                _atomic_write(C.GRANTS, json.dumps(gs, ensure_ascii=False, indent=1))
+                return
 
 
 def send_file(chat_id: int, path: Path, caption: str = "",
@@ -983,7 +1010,23 @@ def _close(pf: Path, prop: dict[str, Any], verdict: str,
 
     `uid` is None for an expiry — nobody decided, the proposal lapsed — and
     that is recorded as such rather than left blank.
+
+    DECIDED ONLY ONCE, UNDER THE LOCK. Two paths race to close one proposal —
+    a mark (decide, main thread) and expiry (sweep_proposals, pump). Whoever
+    takes _STATE_LOCK first decides; the loser sees the decision already
+    recorded and returns. So a grant minted by APPROVED is never overwritten
+    by a late EXPIRED, nor the reverse — no mixed state where the consent log
+    says EXPIRED yet a grant exists.
     """
+    with _STATE_LOCK:
+        if (C.DECIDED / pf.name).exists():
+            return
+        _close_locked(pf, prop, verdict, uid, emoji)
+
+
+def _close_locked(pf: Path, prop: dict[str, Any], verdict: str,
+                  uid: int | None = None, emoji: list[str] | None = None) -> None:
+    """Implementation of _close; always called holding _STATE_LOCK."""
     prop["verdict"] = verdict
     prop["decided_at"] = now()
     prop["decided_by_user_id"] = uid
@@ -1014,8 +1057,7 @@ def _close(pf: Path, prop: dict[str, Any], verdict: str,
                            "decision_reaction": emoji,
                            "proposal_message_id": prop.get("message_id"),
                            "used_at": None})
-            C.GRANTS.write_text(json.dumps(gs, ensure_ascii=False, indent=1),
-                                encoding="utf-8")
+            _atomic_write(C.GRANTS, json.dumps(gs, ensure_ascii=False, indent=1))
             print(f"[{now()}] ПАЧКА РАЗРЕШЕНА: {len(prop['batch']['files'])} "
                   f"файлов -> {prop['batch']['chat_id']} (метка {uid})")
         except Exception as e:
@@ -1030,8 +1072,7 @@ def _close(pf: Path, prop: dict[str, Any], verdict: str,
                          "decision_reaction": emoji,
                          "proposal_message_id": prop.get("message_id")})
             rules.append(rule)
-            C.RULES.write_text(json.dumps(rules, ensure_ascii=False, indent=1),
-                               encoding="utf-8")
+            _atomic_write(C.RULES, json.dumps(rules, ensure_ascii=False, indent=1))
             where = ", ".join(str(d.get("dir")) for d in (rule.get("dirs") or [])) \
                 or ", ".join(rule.get("paths") or []) or rule.get("dir") or "?"
             rooms = rule.get("chats") or [rule.get("chat_id")]
@@ -1041,8 +1082,10 @@ def _close(pf: Path, prop: dict[str, Any], verdict: str,
         except Exception as e:
             print(f"[{now()}] правило НЕ записано: {type(e).__name__}: {e}")
 
-    C.DECIDED.joinpath(pf.name).write_text(
-        json.dumps(prop, ensure_ascii=False), encoding="utf-8")
+    # The decision record — atomic, and FIRST of the final steps: its presence
+    # is what _close's idempotency checks, so it must land whole before pf is
+    # gone. os.replace leaves no half-file.
+    _atomic_write(C.DECIDED / pf.name, json.dumps(prop, ensure_ascii=False))
     pf.unlink(missing_ok=True)
     # Wake the assistant by the same path an ordinary message wakes it.
     C.REQUESTS.joinpath(f"verdict-{pf.stem}.json").write_text(

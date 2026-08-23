@@ -191,7 +191,9 @@ print("\nправило доезжает от предложения до жур
 import inspect
 src = inspect.getsource(B.flush_outbox)
 check("поле rule кладётся в ожидающее предложение", '"rule": prop.get("rule")' in src)
-csrc = inspect.getsource(B._close)
+# _close стал тонкой обёрткой (замок + идемпотентность) над _close_locked;
+# логика записи журнала/правила живёт в реализации, её и инспектируем.
+csrc = inspect.getsource(B._close) + inspect.getsource(B._close_locked)
 check("журнал пишется только при APPROVED и только с uid",
       'verdict == "APPROVED"' in csrc and 'and uid' in csrc)
 check("в запись правила попадает одобривший", "added_by_user_id" in csrc)
