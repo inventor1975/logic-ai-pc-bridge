@@ -1,0 +1,9 @@
+{
+  "bot_name": "Logic",
+  "operator": "Your Name",
+  "triggers": [
+    "logic"
+  ],
+  "dry_run": true,
+  "reply_prefix": "Logic AI(Your Name):"
+}

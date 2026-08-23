@@ -1,0 +1,21 @@
+{
+  "__": "Allowed chats and their boundaries. Reasoning: PROTOCOL.md. Unset fields fall back to CHAT_DEFAULTS in config.py. Written for you by setup.py.",
+  "123456789": {
+    "_": "private chat with the principal",
+    "principal": 123456789,
+    "approvers": [123456789],
+    "may_address": "all",
+    "topic": "the principal's own chat: anything may be discussed here",
+    "outward_gate": true,
+    "announce": true
+  },
+  "-100987654321": {
+    "_": "group with a guest and the guest's AI",
+    "principal": 123456789,
+    "approvers": [123456789],
+    "may_address": "all",
+    "topic": "ONLY the joint measurement work. Unrelated projects do not come in here — the guest is not party to them.",
+    "outward_gate": true,
+    "announce": true
+  }
+}

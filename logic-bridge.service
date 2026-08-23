@@ -1,0 +1,21 @@
+# systemd user unit. Copy to ~/.config/systemd/user/ and fix the paths.
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now logic-bridge
+#   loginctl enable-linger $USER      # or it stops when you log out
+[Unit]
+Description=Telegram bridge for an AI assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/logic-bridge
+ExecStart=/usr/bin/python3 -u %h/logic-bridge/tg_bridge.py
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/logic-bridge/bridge.out
+StandardError=append:%h/logic-bridge/bridge.out
+
+[Install]
+WantedBy=default.target

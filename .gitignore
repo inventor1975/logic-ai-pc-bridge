@@ -1,0 +1,21 @@
+# Yours: identifiers, conversations, credentials
+settings.json
+chats.json
+token.txt
+tg_log.jsonl
+reactions.jsonl
+requests/
+served/
+outbox/
+sent/
+proposals/
+decided/
+reminders/
+sent_reminders/
+
+# State and traces
+.offset
+.announced
+bridge.out
+__pycache__/
+media/
