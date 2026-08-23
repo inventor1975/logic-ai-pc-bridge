@@ -313,15 +313,18 @@ def rule_for(chat_id: int, path: Path,
     except OSError:
         return None
     nowts = datetime.now(timezone.utc)
+    approver_ids = C.all_approvers()
     for r in rules:
         rooms = r.get("chats") or ([r["chat_id"]] if r.get("chat_id") else [])
         if chat_id not in rooms:
             continue
-        # Правило без следа одобрения — не правило. Куратор ставит метку, мост
-        # вписывает его номер; запись без номера могла появиться только мимо
-        # ворот, и доверять ей нельзя.
-        if not r.get("added_by_user_id"):
-            print(f"[{now()}] ПРАВИЛО БЕЗ ОДОБРЯЮЩЕГО, пропущено: {r.get('id')}")
+        # A rule must carry the id of a REAL approver, not just a nonempty field.
+        # The principal places a mark, the bridge writes their id; a record with
+        # an arbitrary nonzero id (a corrupted file, a hand-edit) used to pass —
+        # now the id must be an approver of at least one chat.
+        if r.get("added_by_user_id") not in approver_ids:
+            print(f"[{now()}] ПРАВИЛО НЕ ОТ ОДОБРЯЮЩЕГО, пропущено: {r.get('id')} "
+                  f"(added_by={r.get('added_by_user_id')})")
             continue
         exp = r.get("expires_at")
         if exp:
@@ -376,11 +379,14 @@ def grant_for(chat_id: int, path: Path) -> dict[str, Any] | None:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         return None
+    approver_ids = C.all_approvers()
     for g in C.grants():
         if g.get("used_at"):
             continue
-        if not g.get("added_by_user_id"):
-            print(f"[{now()}] РАЗРЕШЕНИЕ БЕЗ ОДОБРЯЮЩЕГО, пропущено: {g.get('id')}")
+        # Like a rule: the id must be a REAL approver, not merely nonempty.
+        if g.get("added_by_user_id") not in approver_ids:
+            print(f"[{now()}] РАЗРЕШЕНИЕ НЕ ОТ ОДОБРЯЮЩЕГО, пропущено: {g.get('id')} "
+                  f"(added_by={g.get('added_by_user_id')})")
             continue
         if g.get("chat_id") == chat_id and g.get("sha256") == digest:
             return g

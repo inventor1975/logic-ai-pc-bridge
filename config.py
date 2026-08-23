@@ -203,6 +203,22 @@ def approvers(chat_id: int) -> list[int]:
     return policy(chat_id)["approvers"]
 
 
+def all_approvers() -> set[int]:
+    """Every id whose mark counts as consent anywhere — the union across chats.
+
+    A rule/grant is only born at the gate (_close under approver=True), but the
+    file on disk can be corrupted or hand-edited past the gate. Checking merely
+    that added_by_user_id is NONEMPTY is not enough: any nonzero id would pass.
+    The approver must be a REAL approver of at least one chat — a random id is
+    rejected. A folder->group rule approved in a private chat still works: the
+    private chat's principal is here too.
+    """
+    out: set[int] = set()
+    for cfg in _chats().values():
+        out.update(cfg.get("approvers") or [])
+    return out
+
+
 def policy(chat_id: int) -> dict:
     """This chat's boundaries: defaults, overridden by chats.json."""
     p = dict(CHAT_DEFAULTS)

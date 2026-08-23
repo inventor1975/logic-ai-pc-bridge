@@ -126,6 +126,9 @@ check("граница multipart выводится из содержимого, 
 import shutil as _sh; _sh.rmtree(tmpf.parent, ignore_errors=True)
 
 print("\nворота на файлы — журнал правил")
+# Одобряющие правил/разрешений в этих тестах должны быть РЕАЛЬНЫМИ approver'ами
+# (rule_for/grant_for теперь сверяют членство, а не только непустоту id).
+C.all_approvers = lambda: {1, 7, 500600700}
 base = Path(tempfile.mkdtemp())
 (base / "ok.md").write_text("x"); (base / "ok.zip").write_text("x")
 other = Path(tempfile.mkdtemp()); (other / "чужой.md").write_text("x")
@@ -145,6 +148,12 @@ check("обход через .. НЕ проходит",
 NOAPPROVER = [dict(APPROVED[0], added_by_user_id=None)]
 check("правило БЕЗ одобрившего не действует — подделка не проходит",
       B.rule_for(42, base / "ok.md", NOAPPROVER) is None)
+
+# Непустой, но ЧУЖОЙ id (не approver) тоже не проходит — порча файла
+# произвольным ненулевым id раньше принималась.
+NOTAPPROVER = [dict(APPROVED[0], added_by_user_id=999999)]
+check("правило от НЕ-approver id отвергнуто (не просто непустота)",
+      B.rule_for(42, base / "ok.md", NOTAPPROVER) is None)
 
 EXPIRED = [dict(APPROVED[0], expires_at="2020-01-01T00:00:00+00:00")]
 check("истёкшее правило не действует", B.rule_for(42, base / "ok.md", EXPIRED) is None)
