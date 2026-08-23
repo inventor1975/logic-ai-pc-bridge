@@ -31,10 +31,15 @@ the 👀 "recognised" mark, and **reminders**. Replies need the assistant.
 
        python3 setup.py
 
-   It asks for the token, asks what the assistant should be called and whose
-   it is, then asks you to write a message so it can find your `chat_id`
+   It asks for the token, asks **what the assistant should be called** and
+   whose it is, then asks you to write a message so it can find your `chat_id`
    itself — that is the one number no client shows you. It writes
    `settings.json`, `chats.json` and `token.txt`. It does not edit any Python.
+
+   **The name you choose here is how you reach it.** In a shared chat you
+   address the assistant by starting a message with that name (e.g. `Logic, …`);
+   in your own private chat every message counts. See **How to address it**
+   below for the exact rules.
 
 3. **Watch it before it speaks.** Setup leaves `dry_run` on: the bridge reads,
    filters and logs but sends nothing. Run it, write a few messages, look at
