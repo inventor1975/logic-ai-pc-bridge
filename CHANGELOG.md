@@ -238,3 +238,15 @@ set (addressed, given 👀, MINUS those closed via `answers`), from files, with 
 and the `open_eyes=[id…]` field is placed in every request to the assistant — the one that
 fired is before your eyes on the next message and gets closed rather than lost. The
 close-path is untouched.
+
+## v1.13.0 — 2026-08-23
+
+**An invalid `done_emoji` no longer leaves 👀 hanging — falls back to 👍 and
+notifies the assistant.** Telegram accepts reactions only from
+`config.VALID_REACTIONS`; on anything else `ack()` refused and returned without
+touching the reaction, so a close moved the request to `served/` (the assistant
+read it as answered) while 👀 stayed on the phone — 26 piled up unseen in one
+session. Now an invalid `done_emoji` on an eye-close is replaced with 👍 (the
+eye always closes) and the bridge writes `requests/emoji-notice-*.json` so the
+assistant sees, in a file (it never reads the stdout log), that its emoji was
+invalid and 👍 was used instead.

@@ -1544,6 +1544,26 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
                 # fail int() and are skipped, which is what they should do.
                 mid, chat = rid.split("-", 1)
                 done = item.get("done_emoji") or "👍"
+                # AN INVALID done_emoji USED TO LEAVE 👀 IN PLACE. ack() refuses
+                # an emoji Telegram does not accept and returns without touching
+                # the reaction, so the assistant read the request as answered
+                # while the eye stayed open on the phone — 26 piled up that way
+                # in one session before this was found. Substitute the safe mark
+                # so the eye ALWAYS closes, and tell the assistant in a FILE (it
+                # never reads the stdout log where REACTION_INVALID is printed).
+                if done not in C.VALID_REACTIONS:
+                    note = C.REQUESTS / f"emoji-notice-{int(time.time()*1000)}.json"
+                    note.write_text(json.dumps({
+                        "request_id": note.stem, "chat_id": None,
+                        "from_principal": False, "selfcheck": True,
+                        "text": (f"INVALID done_emoji {done!r} on {rid}: Telegram "
+                                 f"does not accept it, used 👍 instead. Take "
+                                 f"done_emoji ONLY from config.VALID_REACTIONS "
+                                 f"(👍 by default) — otherwise the eye does not "
+                                 f"close on the phone.")},
+                        ensure_ascii=False), encoding="utf-8")
+                    print(f"[{now()}] done_emoji {done!r} invalid -> 👍; note {note.name}")
+                    done = "👍"
                 how = ack(int(chat), int(mid), done)
                 # LOGGED, because an action nobody can see is an action nobody
                 # can check. This one was placed correctly and left no trace,
