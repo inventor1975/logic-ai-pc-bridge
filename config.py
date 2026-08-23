@@ -298,8 +298,7 @@ VALID_REACTIONS = frozenset(
 # whom — so the bridge does NOT append it. It only says loudly when it is
 # missing, because a marker written by the machine would say nothing and would
 # stop the assistant from thinking about the question.
-NEEDS_MARKER = ("ТРЕБУЕТ ДЕЙСТВИЯ", "НЕ ТРЕБУЕТ ДЕЙСТВИЯ",
-                "ACTION NEEDED", "NO ACTION NEEDED")
+NEEDS_MARKER = ("ACTION NEEDED", "NO ACTION NEEDED")
 MARKER_MIN_CHARS = 200   # short acknowledgements are exempt
 
 # --------------------------------------------------------------------------
@@ -317,18 +316,19 @@ MARKER_MIN_CHARS = 200   # short acknowledgements are exempt
 # notice still spoke only of the conversation. A notice that lags behind the
 # program is worse than none: it reads as a promise.
 def announce_text(chat_id: int) -> str:
-    signed = ("Мои ответы помечены «{name} ИИ({op}):», так что всегда видно, "
-              "кто говорит. ".format(name=BOT_NAME, op=OPERATOR)
+    signed = ("My replies are marked \"{name} AI({op}):\", so you can always "
+              "see who is speaking. ".format(name=BOT_NAME, op=OPERATOR)
               if policy(chat_id).get("reply_prefix", REPLY_PREFIX) else "")
     return (
-        "Я {name}, ИИ-помощник на стороне {op}.\n\n"
-        "Чтобы обратиться ко мне, начните сообщение со слова «{name}». {signed}\n\n"
-        "Что нужно знать сразу. ВСЯ ЭТА ПЕРЕПИСКА ПИШЕТСЯ В ФАЙЛ на машине {op} "
-        "— не только обращённое ко мне, а всё, потому что без предыдущего я "
-        "отвечаю плохо. КРОМЕ ТЕКСТА СОХРАНЯЮТСЯ ВЛОЖЕНИЯ: присланные картинки, "
-        "документы и голосовые скачиваются и лежат на том же диске; голос ещё и "
-        "расшифровывается в текст. Ничего из этого я не отправляю за пределы "
-        "этого чата по своему почину, и всё, что я здесь говорю, разрешено {op}."
+        "I am {name}, an AI assistant on {op}'s side.\n\n"
+        "To address me, start your message with the word \"{name}\". {signed}\n\n"
+        "What you should know right away. THIS ENTIRE CONVERSATION IS WRITTEN "
+        "TO A FILE on {op}'s machine — not only what is addressed to me but "
+        "everything, because without the earlier context I answer poorly. "
+        "BESIDES THE TEXT, ATTACHMENTS ARE KEPT: pictures, documents and voice "
+        "notes you send are downloaded and sit on the same disk; voice is also "
+        "transcribed into text. None of this do I send outside this chat of my "
+        "own accord, and everything I say here is permitted by {op}."
     ).format(name=BOT_NAME, op=OPERATOR, signed=signed)
 
 

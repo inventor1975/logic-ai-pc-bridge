@@ -71,7 +71,7 @@ def run():
     log.clear()
     put("r2.json", at=past, chat_id=111, text="важное", ack=True, max_tries=2, tries=2)
     due()
-    ok &= (sent / "r2.json").exists() and log and "сдаюсь" in log[-1]
+    ok &= (sent / "r2.json").exists() and log and "giving up" in log[-1]
 
     # 4. plain — one-shot
     log.clear()

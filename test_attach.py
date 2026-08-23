@@ -114,7 +114,7 @@ tmpf = Path(tempfile.mkdtemp()) / "отчёт.md"
 tmpf.write_bytes("данные".encode())
 r = B.send_file(1, Path("/нет/такого/файла.txt"))
 check("a nonexistent file — an honest refusal, not an exception",
-      r.get("ok") is False and "нет такого" in r.get("description", ""))
+      r.get("ok") is False and "no such file" in r.get("description", ""))
 check("the send function exists and takes a path", callable(B.send_file))
 import inspect
 src = inspect.getsource(B.send_file)
@@ -291,13 +291,13 @@ check("the watchdog sees ALL .py files, not just its own list",
 
 print("\nthe write notice describes what it is ABOUT to do")
 _a = C.announce_text(111111111)
-check("it mentions writing the conversation to a file", "ПИШЕТСЯ В ФАЙЛ" in _a)
-check("it mentions ATTACHMENTS — this was added in v1.1.0", "ВЛОЖЕНИЯ" in _a)
-check("it mentions voice transcription", "расшифров" in _a)
-check("it says nothing goes outward on its own initiative", "по своему почину" in _a)
+check("it mentions writing the conversation to a file", "WRITTEN TO A FILE" in _a)
+check("it mentions ATTACHMENTS — this was added in v1.1.0", "ATTACHMENTS" in _a)
+check("it mentions voice transcription", "transcrib" in _a)
+check("it says nothing goes outward on its own initiative", "own accord" in _a)
 _g = C.announce_text(-5101395964)
-check("where a signature exists, it is mentioned", "ИИ(" in _g)
-check("where there is no signature, it is not mentioned", "ИИ(" not in _a)
+check("where a signature exists, it is mentioned", "AI(" in _g)
+check("where there is no signature, it is not mentioned", "AI(" not in _a)
 _an = _i3.getsource(B.announce)
 check("the notice key includes the text FINGERPRINT, not just the chat number",
       "sha256" in _an and "key" in _an)

@@ -425,7 +425,7 @@ def send_file(chat_id: int, path: Path, caption: str = "",
     the file never leaves over one extra line of text.
     """
     if not path.exists():
-        return {"ok": False, "description": f"нет такого файла: {path}"}
+        return {"ok": False, "description": f"no such file: {path}"}
     method = "sendPhoto" if as_photo else "sendDocument"
     field = "photo" if as_photo else "document"
     if len(caption) > 1024:
@@ -1324,8 +1324,8 @@ def due_reminders() -> None:
         tries = int(r.get("tries", 0))
         max_tries = int(r.get("max_tries", 24))   # 24 × 5 min ≈ 2 hours
         if ack and tries >= max_tries:
-            give_up = (f"{C.REPLY_PREFIX} reminder (сдаюсь после {tries} попыток, "
-                       f"ты, похоже, не увидел): {r['text']}")
+            give_up = (f"{C.REPLY_PREFIX} reminder (giving up after {tries} tries, "
+                       f"you seem not to have seen it): {r['text']}")
             if not C.DRY_RUN:
                 call("sendMessage", chat_id=r["chat_id"], text=give_up)
             print(f"[{now()}] reminder CAPPED unacked -> {r['chat_id']}: {r['text'][:40]}")
