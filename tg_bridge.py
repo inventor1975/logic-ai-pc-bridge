@@ -691,12 +691,23 @@ def open_eye_backlog(chat_id: int) -> list:
         return cached[1]
     got, closed = set(), set()
     name_re = re.compile(rf"^(\d+)-{chat_id}\.json$")
+    # An eye on YOUR message is the request <mid>-<chat>.json. But the eye the
+    # bridge places on MY message when the principal reacts to it is filed as
+    # reaction-<chat>-<mid>.json (mid at the END) — the same open eye, but the
+    # name never matched <mid>-<chat>, so it was invisible to the list and hung
+    # forever. Count it too, keyed by mid.
+    rx_re = re.compile(rf"^reaction-{chat_id}-(\d+)\.json$")
     for base in (C.REQUESTS, C.SERVED):
         for f in base.glob(f"*-{chat_id}.json"):
             m = name_re.match(f.name)
             if m:
                 got.add(int(m.group(1)))
+        for f in base.glob(f"reaction-{chat_id}-*.json"):
+            m = rx_re.match(f.name)
+            if m:
+                got.add(int(m.group(1)))
     ans_re = re.compile(rf"^(\d+)-{chat_id}$")
+    ansrx_re = re.compile(rf"^reaction-{chat_id}-(\d+)$")
     for base in (C.SENT, C.OUTBOX):
         for f in base.glob("*.json"):
             try:
@@ -704,7 +715,7 @@ def open_eye_backlog(chat_id: int) -> list:
             except Exception:
                 continue
             for a in (item.get("answers") or []):
-                mm = ans_re.match(str(a))
+                mm = ans_re.match(str(a)) or ansrx_re.match(str(a))
                 if mm:
                     closed.add(int(mm.group(1)))
     ids = sorted(got - closed)
@@ -1539,10 +1550,17 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
                 # nothing said why.
                 #
                 # The message id is always a positive integer and always
-                # first, so the first hyphen is the only safe boundary. Ids
-                # that begin with a word — verdict-..., reaction-... — still
-                # fail int() and are skipped, which is what they should do.
-                mid, chat = rid.split("-", 1)
+                # first, so the first hyphen is the only safe boundary. A
+                # "verdict-..." id carries no message and still fails int()
+                # below (skipped, as it should). But "reaction-<chat>-<mid>"
+                # DOES carry one — the eye the bridge put on MY message when the
+                # principal reacted to it — so parse mid off the END (rsplit, so
+                # a negative group chat in the middle stays intact) and close
+                # that eye like any other.
+                if rid.startswith("reaction-"):
+                    chat, mid = rid[len("reaction-"):].rsplit("-", 1)
+                else:
+                    mid, chat = rid.split("-", 1)
                 done = item.get("done_emoji") or "👍"
                 # AN INVALID done_emoji USED TO LEAVE 👀 IN PLACE. ack() refuses
                 # an emoji Telegram does not accept and returns without touching

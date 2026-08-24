@@ -250,3 +250,15 @@ session. Now an invalid `done_emoji` on an eye-close is replaced with 👍 (the
 eye always closes) and the bridge writes `requests/emoji-notice-*.json` so the
 assistant sees, in a file (it never reads the stdout log), that its emoji was
 invalid and 👍 was used instead.
+
+## v1.14.0 — 2026-08-24
+
+**Eyes 👀 on MY OWN messages (from the principal's reactions) now join the list
+and can be closed, like any other eye.** When the principal reacts to one of my
+messages, `handle_reaction` puts `ack()` = 👀 on it and files
+`reaction-<chat>-<mid>.json`. But `open_eye_backlog` matched only `<mid>-<chat>`
+names — so that eye was invisible to the list and hung forever. Now `got` also
+counts `reaction-<chat>-<mid>` (keyed by mid); closing through `answers`
+recognises that id (mid parsed off the END via `rsplit`, so a negative group
+chat in the middle stays intact) and places `done_emoji` on my message; the
+`closed` set understands the reaction id. Adds `test_reaction_eyes.py`.
