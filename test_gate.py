@@ -144,7 +144,7 @@ def main() -> int:
     # a private chat; once because a group's chat id is NEGATIVE. Tests
     # written only on the private case are blind to both by construction.
     print("\nnegative (group) chat ids:")
-    GROUP = -5101395964
+    GROUP = -1001234567890
     ids = [f"284-{GROUP}", f"46-{CHAT}", f"verdict-{CHAT}-122"]
     parsed = []
     for rid in ids:

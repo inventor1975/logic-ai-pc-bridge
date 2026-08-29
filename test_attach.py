@@ -290,14 +290,30 @@ check("the watchdog sees ALL .py files, not just its own list",
       'C.ROOT.glob("*.py")' in _dm)
 
 print("\nthe write notice describes what it is ABOUT to do")
-_a = C.announce_text(111111111)
+# THE TWO CHATS ARE CONSTRUCTED, NOT LOOKED UP. This pair used to name real
+# chat ids and read their settings out of chats.json — a file a fresh clone does
+# not have. Both then fell through to the same defaults, so "signature present"
+# and "signature absent" were the same case, and the pair could not fail for the
+# right reason. Here the premise is made true by construction.
+_SIGNED, _PLAIN = 111111111, 222222222
+_real_policy = C.policy
+C.policy = lambda cid, _f=_real_policy: (
+    {**_f(cid), "reply_prefix": "Logic AI(operator):"} if cid == _SIGNED else
+    {**_f(cid), "reply_prefix": ""} if cid == _PLAIN else _f(cid))
+_a = C.announce_text(_PLAIN)
 check("it mentions writing the conversation to a file", "WRITTEN TO A FILE" in _a)
 check("it mentions ATTACHMENTS — this was added in v1.1.0", "ATTACHMENTS" in _a)
 check("it mentions voice transcription", "transcrib" in _a)
 check("it says nothing goes outward on its own initiative", "own accord" in _a)
-_g = C.announce_text(-5101395964)
+_g = C.announce_text(_SIGNED)
 check("where a signature exists, it is mentioned", "AI(" in _g)
 check("where there is no signature, it is not mentioned", "AI(" not in _a)
+# CONTROL OF THE PAIR: without this the two checks above could both pass on
+# defaults alone, proving nothing about the setting they claim to test.
+check("CONTROL: the two chats really differ in the setting",
+      bool(C.policy(_SIGNED).get("reply_prefix")) and
+      not C.policy(_PLAIN).get("reply_prefix"))
+C.policy = _real_policy
 _an = _i3.getsource(B.announce)
 check("the notice key includes the text FINGERPRINT, not just the chat number",
       "sha256" in _an and "key" in _an)

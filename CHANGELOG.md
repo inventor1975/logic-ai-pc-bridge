@@ -3,6 +3,48 @@
 The fingerprint in every line is taken from the file, not from intent.
 
 
+
+## v1.15.0 — 2026-08-29
+
+Everything in this release has one shape: something that used to vanish now says
+what it was.
+
+- **An unknown chat leaves a trace.** A message from a chat outside the
+  allow-list dropped into one log line and nothing else — and an empty folder is
+  indistinguishable from nobody having written. The refusal now writes a file in
+  `needs_whitelist/`, one per chat, carrying the id, title, first text, the
+  reason and how to admit it. Stand: `test_unknown_chat.py`, 9 checks.
+- **An empty message names what it carried.** A sticker, a photo without a
+  caption or a poll reached the assistant as an empty string. It now arrives as
+  `[no text: sticker]`.
+- **Another bot's traffic can be left alone** — new per-chat setting
+  `ignore_other_bots`, **off by default**. When on, a command or mention aimed
+  at another bot does not become a request. Three escapes keep it from doing
+  harm: it fires only for usernames ending in `bot` (Telegram's own rule, so a
+  mention of a person is untouched), never when our own name is unknown, and
+  never when we are named later in the text. Stand: `test_other_bot.py`,
+  10 checks.
+- **Typo-tolerant addressing** (`fuzzy_address`): the name with one wrong letter
+  still calls the bot, with the slack bounded so unrelated words do not.
+  Stand: `test_fuzzy_address.py`, 7 checks.
+- **Anti-flood** (`flood_muted`): over `FLOOD_N` messages in `FLOOD_T` seconds
+  mutes a sender for `FLOOD_K` minutes with exactly one notice. Nobody is
+  exempt, the principal included. Stand: `test_flood.py`, 6 checks.
+- **Open eyes shown as a list** (`pending_eyes`): the bridge never takes the eye
+  off by itself — it puts what is still unanswered under the assistant's nose.
+  Stand: `test_pending_eyes.py`, 6 checks.
+- **Log rotation** (`rotate_log`): past `LOG_MAX_BYTES` the chat log moves to a
+  single backup instead of growing without bound.
+
+Two defects found by running the suite rather than by reading it:
+
+- `test_attach.py` was **red at HEAD**. Its signature pair looked two chat ids up
+  in `chats.json` — a file a fresh clone does not have — so both fell through to
+  the same defaults and the pair could not fail for the right reason. The pair is
+  now constructed, with a control that the two cases genuinely differ.
+- Four files carried a **real private group id** as example data. Replaced with
+  an obviously fictional one.
+
 ## v1.1.0 — 2026-08-22
 
 First version of its own line after `v1.0.0` (an exact copy of the serving tree).

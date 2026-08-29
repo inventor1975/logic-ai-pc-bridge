@@ -123,7 +123,7 @@ def _tag(seed: str) -> str:
 def _batch_proposal(argv: list[str], target: int | None) -> int:
     """Hang a BATCH: one mark — one send to one room.
 
-        ./propose.py --batch a.md b.pdf c.png --to -5101395964 [--why ...]
+        ./propose.py --batch a.md b.pdf c.png --to -1001234567890 [--why ...]
 
     Three conditions, each of which closes its own hole:
 

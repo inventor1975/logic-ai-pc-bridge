@@ -86,6 +86,23 @@ In a **one-to-one chat** with the bot, nothing is required: there is nobody
 else to be talking to, so every message is addressed to it. Set
 `"all_addressed": true` for that chat.
 
+**The name with one wrong letter still works.** Silence over a typo reads as a
+broken bot, not as strictness, so a first word within one or two edits of the
+name counts as the name. The slack is bounded: a word under four letters never
+matches, and the wider slack applies only when both the word and the name are
+five letters or more.
+
+**More than one assistant in the room.** If someone else runs their own bot in
+the same room, their commands and mentions (`/cmd@TheirBot`, `@TheirBot do
+this`) will otherwise wake yours on every message. Set `"ignore_other_bots":
+true` for that chat to leave that traffic in the log without making a request of
+it. It is **off by default**, deliberately: the other bot may also be talking to
+yours, and being woken needlessly costs less than missing an address. Three
+things keep the rule from doing harm — it fires only for usernames ending in
+`bot` (Telegram requires that of bots, so a mention of a *person* is never
+taken), never while your own bot's username is unknown, and never when your
+bot is also named later in the same message.
+
 In a **room**, three things count as addressing it — the name is only one:
 
 Start the message with the assistant's **name**, and only at the start:
@@ -366,6 +383,12 @@ Chats that are not in `chats.json` are ignored entirely — the filter sits
     pending.py            what is still owed an answer
     seal.py               seal old history under your own GPG public key
     test_gate.py          test the gate without Telegram (9 checks)
+    test_attach.py        attachments, notices, watchdogs (92 checks)
+    test_unknown_chat.py  an unknown chat leaves a trace (9 checks)
+    test_other_bot.py     another bot's traffic (10 checks)
+    test_flood.py         anti-flood, nobody exempt (6 checks)
+    test_fuzzy_address.py the name with one wrong letter (7 checks)
+    test_pending_eyes.py  what is still unanswered (6 checks)
     PROTOCOL.md           who may do what, and why
     logic-bridge.service  systemd unit for autostart
 
@@ -386,11 +409,28 @@ Chats that are not in `chats.json` are ignored entirely — the filter sits
 ## Do not commit
 
 `settings.json`, `chats.json`, `token.txt`, `tg_log.jsonl`, `reactions.jsonl`,
-`requests/`, `outbox/`, `sent/`, `proposals/`, `decided/`, `reminders/`.
+`requests/`, `outbox/`, `sent/`, `proposals/`, `decided/`, `reminders/`,
+`needs_whitelist/`, `needs_consent/`.
 These are your conversations, your identifiers and your credentials. The
 supplied `.gitignore` already covers them.
 
+Watch the *examples* too, not only the data files. A chat id written into a
+comment or a test as sample data is a real identifier of a real room, and four
+of them travelled into this repository that way before anyone looked. Nothing
+opens with a chat id alone — but it does not belong in a public package, and
+grepping for your own numbers before a release costs a second.
+
 ## Tests
+
+    for t in test_*.py; do python3 "$t"; done
+
+All of them run without a network and without a `chats.json`, so a fresh clone
+can check itself. **Every check is paired with a control** — showing that a
+thing happens is half the claim; the other half is showing it does not happen
+where it should not. Two defects in this package were found exactly there: a
+pair of checks that both fell through to defaults and so could not fail for the
+right reason, and a control whose premise depended on a file a clone does not
+have.
 
     python3 test_gate.py
 

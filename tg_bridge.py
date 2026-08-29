@@ -265,6 +265,7 @@ def ack(chat_id: int, message_id: int, emoji: str | None = None) -> str:
 # one of its own messages: replying IS addressing, and demanding the name on
 # top of it would be pedantry the sender will not forgive twice.
 _ME = [0]
+_ME_NAME = [""]
 
 # Unknown chats already reported, so one stray group does not fill the log.
 _SEEN_UNKNOWN: set[int] = set()
@@ -658,6 +659,148 @@ def voice_job(chat_id: int, msg: dict[str, Any], rec: dict[str, Any],
     accept(chat_id, msg, rec, text, msg.get("from", {}) or {}, voice=True)
 
 
+# A COMMAND ADDRESSED TO ANOTHER BOT IS NOT FOR US. Telegram lets a sender aim
+# at one bot among several: `/command@BotName`. In a room with all_addressed,
+# without this rule EVERY command meant for another bot becomes a request and
+# wakes the assistant.
+# A command with no suffix (`/plain_command`) is NOT taken away: in a group with
+# several bots an unsuffixed command is addressed to all of them, and deciding
+# for the sender who they meant is not ours to do.
+_CMD_AT = re.compile(r"^\s*(?:/[A-Za-z0-9_]+)?@([A-Za-z0-9_]+)\b")
+
+
+def for_another_bot(text: str) -> str | None:
+    """The other bot's name if the message targets it, else None.
+
+    Catches both ways of addressing a bot: `/command@BotName` and a plain
+    `@BotName, do this` — a person driving their assistant uses both.
+
+    TWO ESCAPES, without which the rule does harm:
+    1) While our own name is unknown (getMe did not succeed) nothing is taken:
+       better to wake up once too often than to swallow an address to ourselves.
+    2) If we are named later in the text, the message is addressed to BOTH and
+       must not be taken away. "@OtherBot, ask Logic whether…" is for us too.
+    """
+    m = _CMD_AT.match(text or "")
+    if not m or not _ME_NAME[0]:
+        return None
+    who = m.group(1)
+    # BOTS ONLY. A Telegram bot username MUST end in "bot" — that is their
+    # registration rule, not a guess. Without this check the rule swallowed an
+    # address to a HUMAN: "@someone please confirm the package" went silent.
+    # Caught by a control in the stand, not by reasoning.
+    if not who.lower().endswith("bot"):
+        return None
+    if who.lower() == _ME_NAME[0].lower():
+        return None
+    low = (text or "").lower()
+    for trig in C.TRIGGERS:                       # named us — then it is for us as well
+        if trig.lower() in low:
+            return None
+    return who
+
+
+def _lev(a: str, b: str) -> int:
+    """Levenshtein distance. Early exit on length — nothing to compute."""
+    if abs(len(a) - len(b)) > 2:
+        return 99
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+_FIRST_WORD = re.compile(r"^\s*([^\s,.;:!?()\-–—]+)")
+
+
+def fuzzy_address(text: str) -> int | None:
+    """Position AFTER the name if the first word is the name misspelled, else None.
+
+    People misspell the bot's name and then wonder why it stayed silent. A
+    refusal to answer over one wrong letter is a defect, not strictness.
+    """
+    m = _FIRST_WORD.match(text or "")
+    if not m:
+        return None
+    word = m.group(1)
+    if len(word) < 4:
+        return None
+    low = word.lower()
+    for trig in C.TRIGGERS:
+        g = trig.lower()
+        # A SLACK OF 2 only when BOTH the word and the name are five letters or
+        # more. A four-letter word two edits away from a five-letter name is more
+        # often a DIFFERENT word than a typo. Measured when this was added.
+        limit = 2 if (len(g) >= 5 and len(low) >= 5) else 1
+        if _lev(low, g) <= limit:
+            return m.end(1)
+    return None
+
+
+_FLOOD_TIMES: dict[Any, list[float]] = {}   # sender -> recent message times
+_FLOOD_UNTIL: dict[Any, float] = {}         # sender -> muted until (epoch)
+
+
+def flood_muted(sender_id: Any, chat_id: int, name: str = "") -> bool:
+    """True if the sender is inside an anti-flood pause (do not take the message).
+
+    Counts EVERYONE, the principal included: a compromised account is exactly
+    where a flood would come from, so there are no exemptions.
+    """
+    if sender_id is None:
+        return False
+    now_t = time.time()
+    until = _FLOOD_UNTIL.get(sender_id, 0.0)
+    if now_t < until:
+        return True                          # already paused — mute silently
+    if until:                                # pause expired — clean up after it
+        _FLOOD_UNTIL.pop(sender_id, None)
+    # BOUND THE GROWTH. Without this the dicts keep one entry per person who
+    # ever wrote and never clean up — unlike _SEEN_UNKNOWN, which resets at 500.
+    # A daemon that lives for months leaks slowly. Clear those whose window is
+    # empty and who are not currently paused.
+    if len(_FLOOD_TIMES) > 500:
+        for k in [k for k, v in _FLOOD_TIMES.items()
+                  if (not v or now_t - max(v) > C.FLOOD_T)
+                  and _FLOOD_UNTIL.get(k, 0.0) <= now_t]:
+            _FLOOD_TIMES.pop(k, None)
+            _FLOOD_UNTIL.pop(k, None)
+    times = [x for x in _FLOOD_TIMES.get(sender_id, ()) if now_t - x < C.FLOOD_T]
+    times.append(now_t)
+    _FLOOD_TIMES[sender_id] = times
+    if len(times) > C.FLOOD_N:
+        _FLOOD_UNTIL[sender_id] = now_t + C.FLOOD_K * 60
+        _FLOOD_TIMES[sender_id] = []
+        who = name or str(sender_id)
+        if not C.DRY_RUN:
+            call("sendMessage", chat_id=chat_id,
+                 text=(f"{C.REPLY_PREFIX} {who}: too many messages — paused for "
+                       f"{C.FLOOD_K} min. Messages are still kept; they are not "
+                       f"taken into work until the pause ends."))
+        print(f"[{now()}] FLOOD: {sender_id} in {chat_id} muted for {C.FLOOD_K} min")
+        return True
+    return False
+
+
+def rotate_log() -> None:
+    """The chat log does not grow forever: past LOG_MAX_BYTES it moves to a
+    single backup (.1) and writing starts again. Cheap, and it will not fill the
+    disk over a year without anyone noticing."""
+    try:
+        if C.LOG.exists() and C.LOG.stat().st_size > C.LOG_MAX_BYTES:
+            bak = C.LOG.with_suffix(C.LOG.suffix + ".1")
+            if bak.exists():
+                bak.unlink()
+            C.LOG.rename(bak)
+            print(f"[{now()}] log rotated: {C.LOG.name} -> {bak.name} "
+                  f"(>{C.LOG_MAX_BYTES} bytes)")
+    except OSError as e:
+        print(f"[{now()}] rotate_log: {type(e).__name__}: {e}")
+
+
 def replying_to_me(msg: dict[str, Any]) -> bool:
     """Is this a reply to one of the assistant's own messages?
 
@@ -729,6 +872,12 @@ def accept(chat_id: int, msg: dict[str, Any], rec: dict[str, Any], text: str,
     pol = C.policy(chat_id)
     private_to_principal = chat_id == pol["principal"]
 
+    other = for_another_bot(text) if pol.get("ignore_other_bots") else None
+    if other:
+        log_line(rec)
+        print(f"[{now()}] command for @{other} — not ours, left in the log only")
+        return
+
     m = _ADDRESS_RE.match(text)
     if pol.get("all_addressed"):
         ask = text.strip()                # a room of two: everything is for me
@@ -740,8 +889,14 @@ def accept(chat_id: int, msg: dict[str, Any], rec: dict[str, Any], text: str,
     elif m:
         ask = re.sub(r"^\s*[:,.;!?\-–—]+\s*", "", text[m.end():]).strip()
     else:
-        log_line(rec)
-        return
+        # A NAME WITH ONE WRONG LETTER IS STILL THE NAME. Silence over a typo
+        # reads as a broken bot, not as strictness.
+        fz = fuzzy_address(text)
+        if fz is None:
+            log_line(rec)
+            return
+        ask = re.sub(r"^\s*[:,.;!?\-–—]+\s*", "", text[fz:]).strip()
+        rec["by_typo"] = True             # visible in the log that a typo called us
 
     if pol["may_address"] != "all" and frm.get("id") not in pol["may_address"]:
         log_line(rec)
@@ -919,6 +1074,21 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
     chat = msg.get("chat", {})
     chat_id = chat.get("id")
     text = msg.get("text") or msg.get("caption") or ""
+    # EMPTY TEXT IS NOT AN EMPTY MESSAGE. A sticker, a photo without a caption,
+    # a poll or a contact arrive with neither text nor caption, and the request
+    # reached the assistant as an empty string: you can see that someone wrote,
+    # not WHAT. In a room where everything counts as addressed this shows up at
+    # once. Same class as an unknown chat leaving no trace: drop the
+    # unrecognised WITH A REASON, never into silence.
+    if not text:
+        _kinds = [k for k in ("sticker", "photo", "document", "video", "audio",
+                              "voice", "video_note", "animation", "poll", "contact",
+                              "location", "venue", "dice", "game", "story",
+                              "new_chat_members", "left_chat_member",
+                              "pinned_message", "forward_origin")
+                  if msg.get(k)]
+        if _kinds:
+            text = "[no text: " + ", ".join(_kinds) + "]"
 
     if whoami:
         print(f"  chat_id={chat_id}  type={chat.get('type')}  "
@@ -939,10 +1109,27 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
             if len(_SEEN_UNKNOWN) > 500:
                 _SEEN_UNKNOWN.clear()      # a set that only grows is a leak
             _SEEN_UNKNOWN.add(chat_id)
+            title = chat.get("title") or chat.get("first_name") or "?"
             print(f"[{now()}] message from a chat that is NOT allowed: "
                   f"chat_id={chat_id} type={chat.get('type')} "
-                  f"title={chat.get('title') or chat.get('first_name') or '?'} "
-                  f"— add it to chats.json to let it in")
+                  f"title={title} — add it to chats.json to let it in")
+            # AND A TRACE ON DISK, not only in the log: otherwise a refusal
+            # looks exactly like no message ever arriving. See C.NEEDS_WHITELIST.
+            try:
+                C.NEEDS_WHITELIST.mkdir(parents=True, exist_ok=True)
+                (C.NEEDS_WHITELIST / f"{chat_id}.json").write_text(
+                    json.dumps({
+                        "chat_id": chat_id,
+                        "type": chat.get("type"),
+                        "title": title,
+                        "first_seen": now(),
+                        "first_text": (msg.get("text") or msg.get("caption") or "")[:400],
+                        "from": (msg.get("from") or {}).get("first_name"),
+                        "why": "chat is not in chats.json — messages from it are DROPPED",
+                        "how_to_admit": "add this chat_id to chats.json and restart the bridge",
+                    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            except Exception as e:                 # the disk must not take the bridge down
+                print(f"[{now()}] could not write needs_whitelist: {e}")
         return
 
     # Once per chat: say that this chat is logged — before the first line of
@@ -959,6 +1146,15 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
         "from_id": frm.get("id"),
         "text": text,
     }
+
+    # ANTI-FLOOD, and it does NOT spare the principal: a compromised account is
+    # exactly where a flood would come from, so an exemption here would be the
+    # hole. Whoever is over the limit gets logged but NOT processed — no
+    # downloads, no request.
+    if flood_muted(frm.get("id"), chat_id,
+                   frm.get("username") or frm.get("first_name") or ""):
+        log_line(rec)
+        return
 
     # A voice note has no text at all: before this, none of the matching below
     # could ever fire and the message vanished without a trace the sender
@@ -1398,6 +1594,54 @@ def nudge_unanswered() -> None:
             print(f"[{now()}] NOBODY TO TAKE IT: {f.stem}, {mins} min, told in chat")
 
 
+def pending_eyes() -> None:
+    """Show the ASSISTANT the list of OPEN EYES — what is still not done.
+
+    The eye 👀 is the only indicator of "not answered", and taking it off
+    automatically is not allowed: the signal would go out while the matter
+    stayed. So the bridge does NOT take it off; it reliably puts the list of
+    what is hanging under the assistant's nose, as a separate ping, rather than
+    relying on memory. Each eye closes only on a REAL answer (the answers field:
+    it changes the mark and moves the request to served in one step).
+    """
+    open_ = []
+    for f in sorted(C.REQUESTS.glob("*.json")):
+        if f.name.startswith(("reaction-", "verdict-", "needsfile-", "control-",
+                              "emoji-notice-", "pending-eyes-")):
+            continue
+        if time.time() - f.stat().st_mtime < C.EYES_AFTER_MIN * 60:
+            continue                            # still fresh — give it a chance
+        try:
+            r = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        open_.append((f.stem, (r.get("text") or r.get("ask") or "")
+                      .replace("\n", " ")[:40]))
+    existing = sorted(C.REQUESTS.glob("pending-eyes-*.json"))
+    if not open_:
+        for e in existing:                      # nothing hanging — retire the list
+            e.rename(C.SERVED / e.name)
+        return
+    key = ",".join(i for i, _ in open_)
+    for e in existing:                          # same set already shown — do not nag
+        try:
+            if json.loads(e.read_text(encoding="utf-8")).get("eyes_key") == key:
+                return
+        except Exception:
+            pass
+    for e in existing:                          # the set changed — replace it
+        e.unlink(missing_ok=True)
+    lines = "\n".join(f"    {i}  {x}" for i, x in open_)
+    stem = f"pending-eyes-{int(time.time())}"
+    C.REQUESTS.joinpath(f"{stem}.json").write_text(json.dumps({
+        "request_id": stem, "chat_id": None, "from_principal": False,
+        "selfcheck": True, "eyes_key": key,
+        "text": (f"OPEN EYES ({len(open_)}) — not answered. Close EACH with a "
+                 f"real answer (the answers field), not a bare mark:\n{lines}")},
+        ensure_ascii=False), encoding="utf-8")
+    print(f"[{now()}] open eyes shown to the assistant: {key}")
+
+
 def sweep_old_files() -> None:
     """Throw away what nobody will ever look at again.
 
@@ -1543,7 +1787,7 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
         if mark_done:
             try:
                 # SPLIT FROM THE LEFT. A group's chat id is NEGATIVE, so the
-                # request id reads "284--5101395964" — and splitting from the
+                # request id reads "284--1001234567890" — and splitting from the
                 # right cut it at the id's own minus sign, giving message id
                 # "284-", which is not a number. The failure was caught and
                 # swallowed, so in groups the eyes simply never came off and
@@ -1969,6 +2213,7 @@ def main() -> int:
             print("  DRY_RUN: nothing is sent and no reactions are placed.")
         me = call("getMe")
         _ME[0] = (me.get("result") or {}).get("id") or 0
+        _ME_NAME[0] = (me.get("result") or {}).get("username") or ""
         print(f"  bot id {_ME[0] or 'UNKNOWN — replies will not count as addressing'}")
         ready = whisper_ready()
         print(f"  voice: {'transcription available' if ready == 'ok' else 'NO transcription — ' + ready}"
@@ -2014,6 +2259,8 @@ def main() -> int:
                     # next to it.
                     try:
                         nudge_unanswered()
+                        pending_eyes()
+                        rotate_log()
                         sweep_old_files()
                         sweep_media()
                     except Exception as e:

@@ -149,6 +149,14 @@ CHAT_DEFAULTS = {
     # is friction with nothing on the other side of it. The name exists to
     # single the assistant out of a room, so it belongs in rooms.
     "all_addressed": False,
+    # A room can hold more than one assistant. When this is on, a command or
+    # mention aimed at ANOTHER bot (/cmd@TheirBot, "@TheirBot do this") is left
+    # in the log and does not become a request — otherwise a person driving
+    # their own assistant wakes ours on every message.
+    # DEFAULT OFF, and deliberately so: the other bot may also be talking TO us,
+    # and being woken needlessly is cheaper than missing an address. Turn it on
+    # only where the traffic is genuinely someone else's.
+    "ignore_other_bots": False,
     "topic": "not declared",   # the subject of this chat; the assistant stays inside it
     "outward_gate": True,      # actions outside the chat need a mark
     "announce": True,          # one-time notice that the chat is logged
@@ -342,6 +350,11 @@ OUTBOX_SCAN = 1.0         # how often to look at the outbox, seconds
 ROOT = Path(__file__).resolve().parent
 SELFCHECK_COUNT = ROOT / "selfcheck_count"   # counter of the principal's addresses
 LOG = ROOT / "tg_log.jsonl"
+# The chat log grows without bound — the one thing nothing swept. Past
+# LOG_MAX_BYTES it moves to tg_log.jsonl.1 (a single backup) and writing starts
+# again. Voice transcripts are in the log anyway; losing the old is cheap, and a
+# full disk is not.
+LOG_MAX_BYTES = int(_S.get("log_max_bytes", 50 * 1024 ** 2))
 REQUESTS = ROOT / "requests"            # AWAITING A REPLY — this is Logic's inbox
 SERVED = ROOT / "served"                # answered, moved out of sight
 OUTBOX = ROOT / "outbox"
@@ -390,6 +403,16 @@ MEDIA_BUDGET_BYTES = int(_S.get("media_budget_bytes", 2 * 1024 ** 3))
 # not manufacture the object that constrains it.
 NEEDS_CONSENT = ROOT / "needs_consent"   # files awaiting a separate decision
 
+# AN UNKNOWN CHAT LEAVES A TRACE, NOT SILENCE. A message from a chat outside the
+# allow-list used to be dropped, leaving ONE line in bridge.out and nothing else.
+# That is indistinguishable from the world being silent: an empty folder looks
+# exactly like "nobody wrote", and the operator has no way to tell the two apart
+# — so a bot that IS in a group can be reported as absent from it.
+# Now the refusal LEAVES A FILE — one per chat, carrying everything needed to
+# admit it. Same principle already written down for outbox: drop the
+# unrecognised WITH A REASON, never into silence.
+NEEDS_WHITELIST = ROOT / "needs_whitelist"
+
 RULES = ROOT / "rules.json"
 GRANTS = ROOT / "grants.json"            # ONE-TIME permissions for specific files
 
@@ -422,6 +445,19 @@ BATCH_MAX = int(_S.get("batch_max", 10))
 # person has already decided they were forgotten. Counted from the write into
 # the inbox, not from sending.
 NUDGE_AFTER_MIN = int(_S.get("nudge_after_min", 20))
+# After how many minutes the bridge shows the ASSISTANT its still-open eyes as a
+# list. The eye is the indicator of "not done"; it may be taken off only by a
+# real answer. The bridge does not take it off — it merely puts the list under
+# the assistant's nose rather than relying on memory.
+EYES_AFTER_MIN = int(_S.get("eyes_after_min", 3))
+# Flood control, the against-foolishness kind. A sender who sends more than
+# FLOOD_N messages within FLOOD_T seconds is muted for FLOOD_K minutes: their
+# messages are logged but not taken into work, and they get ONE notice.
+# EVERYONE is counted, the principal included — a compromised principal account
+# is exactly where a flood would come from, so an exemption there is the hole.
+FLOOD_N = int(_S.get("flood_n", 10))
+FLOOD_T = int(_S.get("flood_t", 20))
+FLOOD_K = int(_S.get("flood_k", 5))
 
 
 def file_rules() -> list:

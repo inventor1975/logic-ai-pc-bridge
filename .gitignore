@@ -19,3 +19,5 @@ sent_reminders/
 bridge.out
 __pycache__/
 media/
+needs_whitelist/
+selfcheck_count
