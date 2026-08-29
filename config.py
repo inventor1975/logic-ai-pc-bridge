@@ -291,8 +291,14 @@ ACK_EMOJI = "👀"
 # question+disclosure into the request's note. The judge is the code. Crash or
 # timeout — skipped silently: a control question NEVER drops delivery.
 SELFCHECK_EVERY = 5
-SELFCHECK_PRESENT = ["python3",
-    "/media/vitaly/SSD_1000GB/Projects/SelfCheck/selfcheck.py", "present"]
+# THE COMMAND IS YOURS, NOT OURS. This used to ship a hard-coded absolute path
+# into one developer's home directory: inert (SELFCHECK_EVERY defaults to 0) but
+# still a foreign machine's layout travelling inside a public package, and a
+# reproducibility trap for anyone whose tests happened to touch it.
+# Empty by default: no command, no question, nothing to misfire. Point it at your
+# own script through settings.json ("selfcheck_present": ["python3", "...", ...])
+# if you want control questions at all.
+SELFCHECK_PRESENT = list(_S.get("selfcheck_present", []))
 VALID_REACTIONS = frozenset(
     "👍 👎 ❤ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 "
     "🌚 🌭 💯 🤣 ⚡ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👀 🎃 🙈 😇 😨 "

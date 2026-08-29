@@ -1472,6 +1472,8 @@ def control_question() -> str | None:
         C.SELFCHECK_COUNT.write_text(str(n))
         if n % C.SELFCHECK_EVERY != 0:
             return None
+        if not C.SELFCHECK_PRESENT:
+            return None          # no command configured — off, not broken
         r = subprocess.run(C.SELFCHECK_PRESENT, capture_output=True,
                            text=True, timeout=8)
         out = (r.stdout or "").strip()

@@ -4,6 +4,33 @@ The fingerprint in every line is taken from the file, not from intent.
 
 
 
+
+## v1.15.1 — 2026-08-29
+
+Found by an outside reader on a fresh clone of `v1.15.0`, on another machine.
+`v1.15.0` is **left untouched**: it is the frozen reference of a review in
+progress, and a reference that moves is not one.
+
+- `test_autocheck.py` invoked a script by **absolute path into one developer's
+  home directory**. It passed there and failed everywhere else. The stand now
+  writes its own stub into a temp directory and carries its own world; it also
+  gained a control that the stub really produces a question, so the other checks
+  cannot pass with the mechanism removed.
+- `config.py` shipped that same absolute path as the **default** for
+  `SELFCHECK_PRESENT`. Inert — `SELFCHECK_EVERY` is 0 — and still wrong twice:
+  a stranger's directory layout inside a public package, and a trap for anyone
+  whose tests touched it. The default is now empty and read from
+  `settings.json` (`"selfcheck_present"`); an empty command means **off**, not
+  broken, and `control_question()` returns None rather than raising.
+- New stand `test_no_machine_paths.py`: no shipped file may carry an absolute
+  path under `/home`, `/Users`, `/media`, `/mnt` or `C:\Users`. Ordinary system
+  paths are untouched, and a control proves the scanner detects a planted one.
+
+Why the stand was needed rather than more care: a fresh clone **on the same
+machine** could not reproduce the failure, because the dependency was
+machine-wide, not directory-wide. The check has to live in the package, because
+from inside the package the defect is invisible.
+
 ## v1.15.0 — 2026-08-29
 
 Everything in this release has one shape: something that used to vanish now says
