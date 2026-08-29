@@ -5,6 +5,33 @@ The fingerprint in every line is taken from the file, not from intent.
 
 
 
+
+## v1.15.2 — 2026-08-29
+
+An outside reviewer asked whether the **refusal branches** of the guard, the
+allow-list and the consent gate are exercised by the public artifacts. Measured
+rather than argued: two of the three were, the third was not.
+
+- allow-list refusal — exercised (`test_unknown_chat.py`: a non-allowed chat is
+  dropped and leaves a trace);
+- consent-gate refusal — exercised (`test_gate.py`: no mark means no, and the
+  expiry branch);
+- **tamper-guard refusal — NOT exercised.** The suite checked the guard's
+  *shape* — a distinct exit code, that it watches itself, that the manifest
+  globs every `.py` — and never once tampered with a tree and asserted that the
+  guard says no. The branch the guard exists for had never fired in a test.
+
+New stand `test_drift_refusal.py`, 13 checks, drives `drift.py` as a subprocess
+against a throwaway tree so the **exit code** is asserted, not just a return
+value: a missing manifest refuses (`NO_APPROVED_MANIFEST`); a watched file
+changed by one byte refuses with `DRIFT` and names the file; a file that appears
+and a file that disappears each refuse; the refusal is written to
+`drift_refusals.jsonl` with its reason. Four controls keep it honest — an
+approved untouched tree passes, an unwatched file does not trigger it, and the
+refusal code is distinct from 0, 1 and 2.
+
+`v1.15.0` and `v1.15.1` are untouched; both remain valid references.
+
 ## v1.15.1 — 2026-08-29
 
 Found by an outside reader on a fresh clone of `v1.15.0`, on another machine.
