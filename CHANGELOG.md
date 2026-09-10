@@ -2,6 +2,23 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.1.1 — 2026-09-10
+
+A repair, no new capability.
+
+- **A live chat id no longer ships.** A real group id had been in the package
+  since before v2.0.0, in two places: the private-names guard's own control line
+  (the guard does not scan its own file) and a comment where it was glued to a
+  message number (`284--<id>`), a form the guard's pattern refused to match. Both
+  now use invented ids, and the guard reads the request-id form too, with two
+  controls. For ids it now scans its own file as well; a control that needs an
+  id outside the synthetic list marks its line `guard-fixture`.
+- **The guard reports paths, not names.** A tree may track an old copy of the
+  package in a subdirectory; by name alone, a finding in that copy read as the
+  top-level file.
+
+Stand: 27 stands, `test_other_bot` still skipped with its reason.
+
 ## v2.1.0 — 2026-09-10
 
 A new capability, nothing incompatible: the request format, the settings and

@@ -66,6 +66,11 @@ SYNTHETIC = {"123456789", "500600700", "100200300", "555000111", "-9999000111",
                                 # example — a ten-digit number the id pattern cannot
                                 # tell apart from a chat. Listed so, not ignored so.
 ID = re.compile(r"(?<![0-9A-Za-z._-])(-?\d{9,})(?![0-9A-Za-z._-])")
+# A REQUEST ID GLUES A CHAT ID TO A MESSAGE NUMBER: "284--<group id>". The
+# pattern above refuses a match that follows a hyphen, so a real group id
+# written that way crossed into a public release inside a comment (found
+# 2026-09-10). The message number and its hyphen are the tell.
+REQ = re.compile(r"(?<![0-9A-Za-z._-])\d{1,12}-(-?\d{9,})(?![0-9A-Za-z._-])")
 
 ok = fail = 0
 def check(name, cond, why=""):
@@ -96,6 +101,17 @@ else:
             + sorted(HERE.glob("*.json")) + sorted(HERE.glob("*.service"))
 files = [p for p in files if p.name != SELF and p.name not in DATA and p.is_file()]
 
+
+# THE PATH, NOT THE NAME. A tree may track an old copy of the package in a
+# subdirectory; reported by name alone, "old-copy/config.py" read as the
+# top-level config.py, and on 2026-09-10 a clean file was nearly blamed for a finding
+# that sat in a stale copy beside it.
+def _rel(p):
+    try:
+        return p.relative_to(HERE)
+    except ValueError:
+        return p.name
+
 for rule, pat, cure in RULES:
     hits = []
     for f in files:
@@ -108,7 +124,7 @@ for rule, pat, cure in RULES:
                 continue
             m = pat.search(line)
             if m:
-                hits.append(f"{f.name}:{i}: {m.group(0)[:40]}")
+                hits.append(f"{_rel(f)}:{i}: {m.group(0)[:40]}")
     check(f"no such thing: {rule}", not hits,
           f"{len(hits)} lines in {len({h.split(':')[0] for h in hits})} files — {cure}")
     for h in hits[:6]:
@@ -116,8 +132,14 @@ for rule, pat, cure in RULES:
     if len(hits) > 6:
         print(f"         … and {len(hits) - 6} more")
 
+# THIS FILE TOO, FOR IDS. The guard skips itself for names and paths — its own
+# patterns would match themselves — and for ids it skipped itself as well, with
+# no such reason. So its own control line carried a real group id into a public
+# release, and on the day that was repaired, the comment explaining the repair
+# carried the same id again (2026-09-10). A control that needs an id outside
+# SYNTHETIC marks its line guard-fixture; everything else here is scanned.
 hits = []
-for f in files:
+for f in files + [HERE / SELF]:
     try:
         text = f.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
@@ -125,9 +147,9 @@ for f in files:
     for i, line in enumerate(text.splitlines(), 1):
         if "guard-fixture" in line:
             continue
-        for m in ID.finditer(line):
+        for m in list(ID.finditer(line)) + list(REQ.finditer(line)):
             if m.group(1) not in SYNTHETIC:
-                hits.append(f"{f.name}:{i}: {m.group(1)}")
+                hits.append(f"{_rel(f)}:{i}: {m.group(1)}")
 check("no such thing: a live chat id", not hits,
       f"{len(hits)} lines in {len({h.split(':')[0] for h in hits})} files — "
       f"a live chat id belongs in chats.json; a stand uses one from SYNTHETIC")
@@ -146,10 +168,14 @@ check("CONTROL: a short number is not a chat id",
       not ID.search("timeout = 20260910"))
 check("CONTROL: digits inside a digest are not a chat id",
       not ID.search("digest db2902819408774e"))
+check("CONTROL: a live id inside a request id is caught",
+      [m.group(1) for m in REQ.finditer("reads 284--100555000999 here")] == ["-100555000999"])  # guard-fixture
+check("CONTROL: a synthetic id inside a request id is not a violation",
+      all(m.group(1) in SYNTHETIC for m in REQ.finditer("5736-500600700")))
 check("CONTROL: a synthetic id from the list is not a violation",
       all(m.group(1) in SYNTHETIC for m in ID.finditer("PRINCIPAL = 500600700")))
 check("CONTROL: a live id is caught",
-      any(m.group(1) not in SYNTHETIC for m in ID.finditer("chat = -5101395964")))
+      any(m.group(1) not in SYNTHETIC for m in ID.finditer("chat = -100555000999")))  # guard-fixture
 
 print(f"\nNO-PRIVATE-NAMES {'GREEN' if not fail else 'RED'}: {ok} OK, {fail} FAIL")
 sys.exit(1 if fail else 0)

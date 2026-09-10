@@ -2211,7 +2211,7 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
         if mark_done:
             try:
                 # SPLIT FROM THE LEFT. A group's chat id is NEGATIVE, so the
-                # request id reads "284--5101395964" — and splitting from the
+                # request id reads "284--100987654321" — and splitting from the
                 # right cut it at the id's own minus sign, giving message id
                 # "284-", which is not a number. The failure was caught and
                 # swallowed, so in groups the eyes simply never came off and
