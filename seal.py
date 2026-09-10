@@ -30,8 +30,7 @@ from datetime import datetime, timedelta, timezone
 
 import config as C
 
-import os
-RECIPIENT = os.environ.get("SEAL_RECIPIENT", "")  # email of the GPG key that seals your history; set it before use
+RECIPIENT = "vitalyreznik@gmail.com"      # whose public key seals it
 
 
 def main() -> int:

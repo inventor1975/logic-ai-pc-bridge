@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # Copyright 2026 Vitaly Reznik
 # SPDX-License-Identifier: Apache-2.0
-"""Show the rules log: what is allowed, who approved it, and what went out under it.
+"""Show the rule book: what is allowed, who approved it, what went out under it.
 
     ./rules.py
 
-A PERMISSION YOU CANNOT SEE stops being a decision within a month and turns into
-a habit. A rule settles the question IN ADVANCE — so the only check left runs
-AFTERWARD, and it must be at hand, not buried in a 40-thousand-line log.
+A PERMISSION NOBODY LOOKS AT stops being a decision within a month and becomes a
+habit. A rule settles the question IN ADVANCE — so the only check left happens
+AFTERWARDS, and it has to be within reach, not buried in a 40 000-line log.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import config as C
 def main() -> int:
     rules = C.file_rules()
     if not rules:
-        print("log is empty — NOTHING is allowed, every file is asked about")
+        print("the book is empty — NOTHING is allowed, every file is asked about")
         return 0
 
     log = C.ROOT / "sent_by_rule.log"
@@ -46,22 +46,23 @@ def main() -> int:
             print(f"    folder   {d.get('dir')}  ({d.get('glob') or '*'})")
         for pth in (r.get("paths") or []):
             print(f"    file     {pth}")
-        if r.get("dir"):                       # v1.4 form
+        if r.get("dir"):                       # the v1.4 shape
             print(f"    folder   {r['dir']}  ({r.get('glob') or '*'})")
         for n in names:
             print(f"    to       {n}")
-        print(f"    expires  {r.get('expires_at') or 'no expiry'}")
-        # WHO approved — by number, not by name: people pick their own names.
+        print(f"    until    {r.get('expires_at') or 'no deadline'}")
+        # WHO approved it, as a number rather than a name: a name is something
+        # a person picks for themselves and can change tomorrow.
         who = r.get("added_by_user_id")
-        print(f"    approved {who if who else 'NOBODY — rule is invalid'}"
+        print(f"    by       {who if who else 'NOBODY — the rule is void'}"
               f"  {r.get('decision_reaction') or ''}  {r.get('added_at') or ''}")
         print(f"    sent     {used.get(rid, 0)}"
               + (f", last {last[rid]}" if rid in last else ""))
 
     total = sum(used.values())
-    print(f"\ntotal rules {len(rules)}, sends under them {total}")
+    print(f"\n{len(rules)} rules, {total} sends under them")
     if total and not log.exists():
-        print("MISMATCH: there is a count but no send log")
+        print("INCONSISTENT: there is a count but no send log")
     return 0
 
 

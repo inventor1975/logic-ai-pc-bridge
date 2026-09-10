@@ -29,79 +29,77 @@ the 👀 "recognised" mark, and **reminders**. Replies need the assistant.
 
 ## Install
 
-1. **Create a bot.** Open `@BotFather` in Telegram → `/newbot` → pick a name →
-   it gives you a token.
+1. **Create a bot.** In Telegram open `@BotFather` → `/newbot` → pick a name.
+   It answers with a token. Only a person can do this step: Telegram allows no
+   one to automate it.
 
-2. **Run setup.**
+2. **Run setup, then write to your bot.**
 
        python3 setup.py
 
-   It asks for the token, asks **what the assistant should be called** and
-   whose it is, then asks you to write a message so it can find your `chat_id`
-   itself — that is the one number no client shows you. It writes
-   `settings.json`, `chats.json` and `token.txt`. It does not edit any Python.
+   Paste the token when asked, then send your bot any message in Telegram.
+   Setup takes the rest from that message — who you are, which language you
+   use — writes its files, checks everything with `doctor.py`, and on Linux
+   offers to start the bridge now and at every boot. It ends with one line:
+   `READY`, or exactly what to fix.
 
-   **The name you choose here is how you reach it.** In a shared chat you
-   address the assistant by starting a message with that name (e.g. `Logic, …`);
-   in your own private chat every message counts. See **How to address it**
-   below for the exact rules.
+That is the whole install. The bridge answers at once. Staying silent at first
+would not make it safer: it would still record the conversation while holding
+back the notice that tells people they are recorded. What keeps it safe is the
+list of allowed chats, and setup builds that from the chats you yourself wrote
+in.
 
-3. **Watch it before it speaks.** Setup leaves `dry_run` on: the bridge reads,
-   filters and logs but sends nothing. Run it, write a few messages, look at
-   `tg_log.jsonl` and `requests/`.
+### If it does not answer
 
-       python3 tg_bridge.py
+    python3 doctor.py
 
-4. **Let it speak.** Set `"dry_run": false` in `settings.json`.
-
-5. **Autostart** (Linux). The bridge is needed when your assistant's session
-   is closed — reminders in particular.
-
-       cp logic-bridge.service ~/.config/systemd/user/
-       # fix the paths inside it if the project lives elsewhere
-       systemctl --user daemon-reload
-       systemctl --user enable --now logic-bridge
-       loginctl enable-linger $USER
-
-   `enable-linger` is not optional: without it user services stop when you log
-   out, and a reminder scheduled for the evening never arrives.
-
-       systemctl --user status  logic-bridge
-       systemctl --user restart logic-bridge     # after editing the code
-
-   **Stop the service before running the bridge by hand** — two processes
-   polling one token conflict.
+One check per link in the chain — token, webhook, a second process on the same
+token, privacy mode, settings — each `PASS`, `WARN` or `FAIL` with what to do.
+It sends nothing, changes nothing and never prints the token, so its whole
+output can be shown to anyone helping you.
 
 ### For groups
 
-- `@BotFather` → `/mybots` → your bot → Bot Settings → **Group Privacy: off**,
-  otherwise the bot only sees messages starting with a command.
-- To receive **reactions** in a group the bot must additionally be an
-  **administrator** there. In a private chat no rights are needed (measured).
-  If admin is not possible, approve with a word instead of a mark.
+Setup only offers a group you wrote in while it was waiting, and asks first:
+working in a group records that room, and everyone there is told so.
+
+- `@BotFather` → `/mybots` → your bot → Bot Settings → **Group Privacy: off**.
+- Then **remove the bot from the group and add it again**. Without that the new
+  setting does not apply, and the bot stays deaf in the group while every step
+  looks done.
+- To receive **reactions** in a group the bot must also be an **administrator**
+  there. In a private chat no rights are needed (measured). If admin is not
+  possible, approve with a word instead of a mark.
+
+### Every question, the long way
+
+    python3 setup.py --advanced
+
+Name and other spellings, how replies are signed, the principal and subject of
+each chat, a separate interpreter for voice transcription, and a silent first
+run if you want one.
+
+### Autostart by hand
+
+Setup writes the service with this directory's real paths. If you declined, or
+your system has no `systemctl --user`:
+
+    cp logic-bridge.service ~/.config/systemd/user/     # then fix the paths inside
+    systemctl --user daemon-reload
+    systemctl --user enable --now logic-bridge
+    loginctl enable-linger $USER
+
+`enable-linger` is not optional: without it user services stop when you log out,
+and a reminder scheduled for the evening never arrives. **Stop the service
+before running the bridge by hand** — two processes polling one token conflict.
+Setup never overwrites a service that already runs a bridge from another
+directory.
 
 ## How to address it
 
 In a **one-to-one chat** with the bot, nothing is required: there is nobody
 else to be talking to, so every message is addressed to it. Set
 `"all_addressed": true` for that chat.
-
-**The name with one wrong letter still works.** Silence over a typo reads as a
-broken bot, not as strictness, so a first word within one or two edits of the
-name counts as the name. The slack is bounded: a word under four letters never
-matches, and the wider slack applies only when both the word and the name are
-five letters or more.
-
-**More than one assistant in the room.** If someone else runs their own bot in
-the same room, their commands and mentions (`/cmd@TheirBot`, `@TheirBot do
-this`) will otherwise wake yours on every message. Set `"ignore_other_bots":
-true` for that chat to leave that traffic in the log without making a request of
-it. It is **off by default**, deliberately: the other bot may also be talking to
-yours, and being woken needlessly costs less than missing an address. Three
-things keep the rule from doing harm — it fires only for usernames ending in
-`bot` (Telegram requires that of bots, so a mention of a *person* is never
-taken), never while your own bot's username is unknown, and never when your
-bot is also named later in the same message.
 
 In a **room**, three things count as addressing it — the name is only one:
 
@@ -233,14 +231,16 @@ precisely when two things arrive at once, which is exactly when it matters.
 **Every request carries the open-eye list (`open_eyes`).** A field on each
 request to the assistant lists every message that still wears 👀 — everything
 not yet closed. This exists because the report of what was owed only scanned
-`requests/`: once a request aged out into `served/` with its eye still open, it
-fell out of sight, and the assistant could not close what it could not see.
+`requests/`: once a request aged out into `served/` (after
+`SERVICE_REQUEST_KEEP_HOURS`) with its eye still open, it fell out of the report
+and became invisible, and the assistant could not close what it could not see.
 Over a long session more than a hundred eyes piled up that way — each a "not
 done" the principal reads by, none of them answered. The full backlog now rides
 on every message (`open_eye_backlog(chat_id)` — everything addressed that got
 👀, minus everything closed by `answers`, cached briefly), so a straggler is in
 front of the assistant on the next message and gets closed, rather than
-drifting out of sight.
+drifting out of sight. The principal navigates by these eyes; a stuck 👀 lies
+"not done", and the list is what keeps the lie from accumulating.
 
 ## Editing what was already sent
 
@@ -383,12 +383,6 @@ Chats that are not in `chats.json` are ignored entirely — the filter sits
     pending.py            what is still owed an answer
     seal.py               seal old history under your own GPG public key
     test_gate.py          test the gate without Telegram (9 checks)
-    test_attach.py        attachments, notices, watchdogs (92 checks)
-    test_unknown_chat.py  an unknown chat leaves a trace (9 checks)
-    test_other_bot.py     another bot's traffic (10 checks)
-    test_flood.py         anti-flood, nobody exempt (6 checks)
-    test_fuzzy_address.py the name with one wrong letter (7 checks)
-    test_pending_eyes.py  what is still unanswered (6 checks)
     PROTOCOL.md           who may do what, and why
     logic-bridge.service  systemd unit for autostart
 
@@ -409,28 +403,11 @@ Chats that are not in `chats.json` are ignored entirely — the filter sits
 ## Do not commit
 
 `settings.json`, `chats.json`, `token.txt`, `tg_log.jsonl`, `reactions.jsonl`,
-`requests/`, `outbox/`, `sent/`, `proposals/`, `decided/`, `reminders/`,
-`needs_whitelist/`, `needs_consent/`.
+`requests/`, `outbox/`, `sent/`, `proposals/`, `decided/`, `reminders/`.
 These are your conversations, your identifiers and your credentials. The
 supplied `.gitignore` already covers them.
 
-Watch the *examples* too, not only the data files. A chat id written into a
-comment or a test as sample data is a real identifier of a real room, and four
-of them travelled into this repository that way before anyone looked. Nothing
-opens with a chat id alone — but it does not belong in a public package, and
-grepping for your own numbers before a release costs a second.
-
 ## Tests
-
-    for t in test_*.py; do python3 "$t"; done
-
-All of them run without a network and without a `chats.json`, so a fresh clone
-can check itself. **Every check is paired with a control** — showing that a
-thing happens is half the claim; the other half is showing it does not happen
-where it should not. Two defects in this package were found exactly there: a
-pair of checks that both fell through to defaults and so could not fail for the
-right reason, and a control whose premise depended on a file a clone does not
-have.
 
     python3 test_gate.py
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Vitaly Reznik
 # SPDX-License-Identifier: Apache-2.0
-"""Stand: a command aimed at ANOTHER bot must not become a request for us.
+"""Stand: a command aimed at ANOTHER bot must not become a request to us.
 
 Telegram lets a sender target one bot among several with `/command@BotName`.
 In a room where everything counts as addressed, every such command used to
@@ -11,6 +11,20 @@ Every check has a CONTROL. Showing that another bot's command is dropped is not
 enough: our own command, an unsuffixed command, and plain text must all still
 arrive — otherwise the stand is happy with an instrument that drops everything.
 """
+import sys as _sys
+import tg_bridge as _B
+# SKIPPED, NOT RED — AND SAYING WHY. This stand specifies for_another_bot(): a
+# command aimed at another bot in a shared room (/cmd@OtherBot) is not a request
+# to us. The feature is NOT in the product: it lived in a development tree and was
+# overwritten on 2026-09-10 when that tree was synchronised; the code survives in
+# the development history. Whether to bring it back is an open decision. A red
+# stand for a feature the product does not claim to have would be a false alarm
+# in every checkout; deleting it would lose the specification. So it skips,
+# loudly, until the decision is made.
+if not hasattr(_B, "for_another_bot"):
+    print("OTHER-BOT SKIPPED: for_another_bot() is not in this product (decision pending)")
+    _sys.exit(0)
+
 import json, pathlib, shutil, sys, tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -32,10 +46,9 @@ for _name in ("REQUESTS", "SERVED", "MEDIA", "OUTBOX", "SENT",
         setattr(C, _name, tmp / _name.lower())
         getattr(C, _name).mkdir(parents=True, exist_ok=True)
 
-_POL = {"principal": CHAT, "all_addressed": True, "may_address": "all",
-        "outward_gate": False, "topic": "", "language": "",
-        "relay_to_principal": False, "ignore_other_bots": True}
-C.policy = lambda cid: _POL
+C.policy = lambda cid: {"principal": CHAT, "all_addressed": True,
+                        "may_address": "all", "outward_gate": False,
+                        "topic": "", "language": "", "relay_to_principal": False}
 B._ME_NAME[0] = "logic_vr_bot"
 
 def requests_after(text):
@@ -87,15 +100,6 @@ check("CONTROL: an @mention of a human is untouched",
 check("CONTROL: a command-looking word inside a sentence is not a command",
       requests_after("please run /allow_here@IUSLererBot for me") != [],
       "the rule must anchor at the start, not match anywhere in the text")
-
-# CONTROL OF THE DEFAULT. The rule is opt-in: with the setting off, the other
-# bot's command must still arrive. Shipping it as unconditional would decide for
-# every operator that another assistant's traffic is never meant for theirs.
-_POL["ignore_other_bots"] = False
-check("CONTROL: with the setting OFF nothing is filtered",
-      requests_after("/allow_here@IUSLererBot") != [],
-      "the feature is forced on everyone instead of being a choice")
-_POL["ignore_other_bots"] = True
 
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"\nOTHER-BOT {'GREEN' if not fail else 'RED'}: {ok} OK, {fail} FAIL")

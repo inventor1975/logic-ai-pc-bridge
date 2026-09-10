@@ -1,9 +1,61 @@
 {
+  "_note": "Every key the bridge reads is listed here at its default value. Copy this file to settings.json and change what you need; settings.json itself is never committed. Keys starting with _ are documentation and are ignored.",
+
+  "_1_identity": "Who the bot is and how people call it.",
   "bot_name": "Logic",
   "operator": "Your Name",
-  "triggers": [
-    "logic"
-  ],
+  "triggers": ["logic"],
   "dry_run": true,
-  "reply_prefix": "Logic AI(Your Name):"
+
+  "_2_signatures": "AI disclosure lines. Empty value = the built-in default shown here.",
+  "reply_prefix": "Logic AI(Your Name):",
+  "copy_prefix": "Logic AI(Your Name) — ready to send:",
+  "relay_prefix": "Your Name (written in Russian, translated by Logic, his AI assistant; approved by Your Name before sending):",
+
+  "_3_voice": "Transcription of voice notes. whisper_python is the interpreter that has faster-whisper installed; empty = the one running the bridge.",
+  "whisper_python": "",
+  "whisper_model": "small",
+  "whisper_device": "cpu",
+  "voice_lang": "",
+  "voice_is_address_in_private": true,
+
+  "_4_attachments": "Bytes. media_max_bytes cannot usefully exceed 20 MB — that is the Bot API getFile ceiling.",
+  "media_max_bytes": 20971520,
+  "media_budget_bytes": 2147483648,
+
+  "_5_pace": "Batching, nudges and the eyes mark, in minutes and counts.",
+  "batch_max": 10,
+  "nudge_after_min": 20,
+  "eyes_after_min": 3,
+
+  "_6_flood": "flood_k messages within flood_t seconds mute a sender for flood_n minutes.",
+  "flood_n": 10,
+  "flood_t": 20,
+  "flood_k": 5,
+
+  "_7_housekeeping": "Retention. keep_days covers the log; service_request_keep_hours covers the bridge's own requests.",
+  "keep_days": 30,
+  "log_max_bytes": 52428800,
+  "service_request_keep_hours": 6,
+
+  "_8_selfcheck": "Optional control questions, run as a separate process. Empty list = no such instrument installed, no questions asked.",
+  "selfcheck_present": [],
+
+  "_9_language": "Which locale/<code>.json the bridge speaks. en is the product's own language and the fallback for anything a translation is missing. Shipped: en, ru, uk, he, de, fr, es.",
+  "lang": "en",
+
+  "_10_handlers": "External programs the bridge may call, one per command. This is how an installation adds its own features WITHOUT touching the product: the bridge sends one JSON object on stdin (command, arg, chat_id, chat_type, from, message_id) and expects one JSON object on stdout ({text, files, caption}). Shape: {\"command\": \"/notes\", \"run\": [\"python3\", \"~/tools/notes.py\"], \"help\": \"search my notes\", \"where\": \"principal_private\", \"timeout_seconds\": 60}. Use \"pattern\" instead of \"command\" for a family, e.g. \"^/f([1-9])$\" — its groups reach the program. WHERE IS DEFAULT-DENY: without it a handler runs only in the principal's private chat, because an extension usually reaches private material.",
+  "handlers": [],
+
+  "_11_mail_watch": "Optional: watch a shared folder (Dropbox, Syncthing) and announce what appears or disappears. Remove this block entirely if you do not need it. folder_rooms routes a folder event whose name contains match into its own chat instead of the general one; label is the header of the notification.",
+  "mail_watch": {
+    "inbox": "~/Exchange/Inbox-mine",
+    "outbox": "~/Exchange/Inbox-theirs",
+    "mirror": "~/Exchange-mirror",
+    "scan_seconds": 60,
+    "label": "MAIL",
+    "folder_rooms": [
+      {"match": "PROJECT-X", "chat_id": -1001234567890, "name": "Project X"}
+    ]
+  }
 }

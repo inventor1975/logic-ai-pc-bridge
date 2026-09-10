@@ -1,23 +1,27 @@
-# Yours: identifiers, conversations, credentials
-settings.json
-chats.json
-token.txt
-tg_log.jsonl
-reactions.jsonl
-requests/
-served/
-outbox/
-sent/
-proposals/
-decided/
-reminders/
-sent_reminders/
-
-# State and traces
-.offset
-.announced
-bridge.out
+# ═══ AN ALLOW LIST: BY DEFAULT NOTHING IS TAKEN ═════════════════════════════
+#
+# The operator's design (2026-08-29): a deny list errs towards ADMITTING — any
+# kind of file nobody foresaw slips into history silently. An allow list errs
+# towards REFUSING — a new kind of file stays out until someone decides it is
+# the product, and that mistake shows at once and costs one line to fix.
+#
+# This is the PRODUCT's list. An installation's data — chats, settings, grants,
+# rules, the token, logs, queues, the tamper watch's approved state — is never
+# admitted here, whatever an installation's own git may choose to track. On
+# 2026-09-10 a deny list had let a runtime log carrying live chat ids sit in this
+# repository for nineteen days.
+*
+!*/
+!*.py
+!*.md
+!*.example
+!*.service
+!LICENSE
+!.gitignore
+!locale/
+!locale/*.json
+# and still keep out what the admissions above would let slip through
+*.bak
+*.bak-*
+*.pyc
 __pycache__/
-media/
-needs_whitelist/
-selfcheck_count

@@ -1,360 +1,348 @@
 # LogicBridge — changelog
 
-The fingerprint in every line is taken from the file, not from intent.
+The digest in every line is taken from the file, not from the intention.
 
+## v2.0.0 — 2026-09-10
 
+**Incompatible.** By the rule in VERSIONS.md: the request format, the settings and
+a command-line tool changed.
 
+The product and an installation are now separate things. Everything specific to
+one installation has left the code; an installation is settings and data only.
 
+- **External handlers** (`settings.json → handlers`). A command maps to an
+  external program: one JSON object on stdin, one back on stdout. `where` defaults
+  to the principal's private chat — an extension usually reaches private material.
+  A private search tool that lived inside the bridge (383 lines, three absolute
+  paths) was removed and now runs outside it as a handler. *Incompatible:* its
+  commands no longer exist in the product.
+- **Seven languages**: `locale/{en,ru,uk,he,de,fr,es}.json`, chosen by
+  `settings.lang`. The English action marker is accepted in every language.
+  uk, he, de, fr and es have not yet been reviewed by native speakers.
+- **Renamed** (*incompatible*). The mail watch: `mail_watch()`, `MAILWATCH_*`,
+  `FOLDER_ROOMS`, `mail_watch.label`, and its requests are prefixed `mailwatch-`
+  instead of an installation-specific prefix. The queue watch:
+  `queue_watch.py --only / --except / --once`.
+- **Install in two steps.** Create a bot at `@BotFather`, then `python3 setup.py`:
+  it asks only for the token and waits for your first message. The principal, the
+  language (Telegram's `language_code`) and the name come from that message; the
+  bridge answers at once. On Linux it writes a service with this directory's real
+  paths — and never overwrites a service that serves another directory. It ends by
+  running `doctor.py` and prints `READY` or what to fix. The full questionnaire is
+  `setup.py --advanced`. `doctor.py` joins the package.
+- **The bridge creates its own directories.** A clean install used to die on the
+  very first incoming message.
+- **File names in any script are kept.** Only characters dangerous in a path or a
+  header are replaced; Hebrew or Chinese names no longer arrive as underscores.
+- **The mail watch's state knows its folders.** Changing a folder in settings
+  re-baselines silently instead of announcing everything as gone.
+- **An allow-list `.gitignore`.** An installation's data — chats, settings, grants,
+  rules, the token, logs, queues — is never admitted.
+- **New guards**: no private name, chat id or machine path in anything git ships;
+  every settings key documented in the example; a clean checkout installs and
+  survives its first message; every locale complete, with identical placeholders
+  and no literal `\n`; English-only source; the setup plan decides correctly.
+- The source is in English throughout.
 
-## v1.15.2 — 2026-08-29
+Stand: 26 stands. One (`test_other_bot`) is **skipped** with its reason: the
+feature it specifies is not in this product, and whether to restore it is an open
+decision.
 
-An outside reviewer asked whether the **refusal branches** of the guard, the
-allow-list and the consent gate are exercised by the public artifacts. Measured
-rather than argued: two of the three were, the third was not.
+## v1.21.0 — 2026-08-24
 
-- allow-list refusal — exercised (`test_unknown_chat.py`: a non-allowed chat is
-  dropped and leaves a trace);
-- consent-gate refusal — exercised (`test_gate.py`: no mark means no, and the
-  expiry branch);
-- **tamper-guard refusal — NOT exercised.** The suite checked the guard's
-  *shape* — a distinct exit code, that it watches itself, that the manifest
-  globs every `.py` — and never once tampered with a tree and asserted that the
-  guard says no. The branch the guard exists for had never fired in a test.
+**Eyes 👀 on MY OWN messages (from the principal's reactions) now enter the list
+and are closed like any other eye (variant 1).** When the principal reacts to one
+of my messages, `handle_reaction` sets `ack()` = 👀 on it and files
+`reaction-<chat>-<mid>.json`. But `open_eye_backlog` counted only names shaped
+`<mid>-<chat>` — that eye was invisible to the list and hung for ever (found by
+the operator). Now `got` counts `reaction-<chat>-<mid>` as well (keyed by mid);
+closing through `answers` recognises that id (the mid is cut from the END with
+`rsplit`, so a negative group chat id in the middle stays intact) and sets
+`done_emoji` on my message; the `closed` set accounts for such ids. Added
+`test_reaction_eyes.py`.
 
-New stand `test_drift_refusal.py`, 13 checks, drives `drift.py` as a subprocess
-against a throwaway tree so the **exit code** is asserted, not just a return
-value: a missing manifest refuses (`NO_APPROVED_MANIFEST`); a watched file
-changed by one byte refuses with `DRIFT` and names the file; a file that appears
-and a file that disappears each refuse; the refusal is written to
-`drift_refusals.jsonl` with its reason. Four controls keep it honest — an
-approved untouched tree passes, an unwatched file does not trigger it, and the
-refusal code is distinct from 0, 1 and 2.
+## v1.20.0 — 2026-08-23
 
-`v1.15.0` and `v1.15.1` are untouched; both remain valid references.
+**An invalid `done_emoji` no longer leaves 👀 hanging — it falls back to 👍 and
+notifies the AI.** Telegram accepts reactions only from `config.VALID_REACTIONS`;
+for anything else `ack()` REFUSED and returned without replacing the reaction —
+the request went to served (the assistant read "answered") while the 👀 on the
+phone STAYED. Twenty-six stuck that way in one session. Now, when an eye is
+closed, an invalid `done_emoji` is REPLACED by 👍 (the eye always goes out), and
+the bridge writes `requests/emoji-notice-*.json` — the assistant sees, in a file
+(it does not read the stdout log), that the emoji was invalid and 👍 was
+substituted. `pending_eyes` skips `emoji-notice-`.
 
-## v1.15.1 — 2026-08-29
+## v1.19.0 — 2026-08-23
 
-Found by an outside reader on a fresh clone of `v1.15.0`, on another machine.
-`v1.15.0` is **left untouched**: it is the frozen reference of a review in
-progress, and a reference that moves is not one.
+**A list of open eyes on EVERY request (`open_eyes`).** 👀 = not handled, and the
+operator navigates by it. `pending_eyes` saw only the fresh ones in `requests/`,
+while those moved to `served` after 6 h dropped out of the report and became
+invisible — 115 unclosed eyes accumulated that way in one session. Now
+`open_eye_backlog(chat_id)` counts the WHOLE open set (addressed, given a 👀,
+MINUS those closed through `answers`), from files, with a 10 s cache, and the
+`open_eyes=[id…]` field is put into every request to me. Nothing is lost that
+way, and the ones that fired do get closed. The operator's design. The close path
+is untouched.
 
-- `test_autocheck.py` invoked a script by **absolute path into one developer's
-  home directory**. It passed there and failed everywhere else. The stand now
-  writes its own stub into a temp directory and carries its own world; it also
-  gained a control that the stub really produces a question, so the other checks
-  cannot pass with the mechanism removed.
-- `config.py` shipped that same absolute path as the **default** for
-  `SELFCHECK_PRESENT`. Inert — `SELFCHECK_EVERY` is 0 — and still wrong twice:
-  a stranger's directory layout inside a public package, and a trap for anyone
-  whose tests touched it. The default is now empty and read from
-  `settings.json` (`"selfcheck_present"`); an empty command means **off**, not
-  broken, and `control_question()` returns None rather than raising.
-- New stand `test_no_machine_paths.py`: no shipped file may carry an absolute
-  path under `/home`, `/Users`, `/media`, `/mnt` or `C:\Users`. Ordinary system
-  paths are untouched, and a control proves the scanner detects a planted one.
+## v1.18.0 — 2026-08-23
 
-Why the stand was needed rather than more care: a fresh clone **on the same
-machine** could not reproduce the failure, because the dependency was
-machine-wide, not directory-wide. The check has to live in the package, because
-from inside the package the defect is invisible.
+**The approver of a rule or grant must be a REAL approver, not merely a non-empty
+field.** `rule_for`/`grant_for` checked only that `added_by_user_id` was NON-EMPTY;
+an arbitrary non-zero id (a corrupted `grants.json`/`rules.json`, a hand edit
+around the gate) used to pass and the file went out. Now the id must be an
+approver of at least one chat (`config.all_approvers()` — the union across chats).
+Backward compatible: live rules from the principal pass (they are an approver of
+both chats); a "folder→group" rule approved in a private chat still works.
+`test_attach` pins it: an id outside the approvers is refused.
 
-## v1.15.0 — 2026-08-29
+The finding came from TWO independent methods — a security lens (#2, deferred as
+defence in depth) and a blind atomic decomposition of the same code (R8/G7: "the
+code checks non-emptiness but not the authenticity of the approval"). They agreed,
+so it was closed.
 
-Everything in this release has one shape: something that used to vanish now says
-what it was.
+## v1.17.0 — 2026-08-23
 
-- **An unknown chat leaves a trace.** A message from a chat outside the
-  allow-list dropped into one log line and nothing else — and an empty folder is
-  indistinguishable from nobody having written. The refusal now writes a file in
-  `needs_whitelist/`, one per chat, carrying the id, title, first text, the
-  reason and how to admit it. Stand: `test_unknown_chat.py`, 9 checks.
-- **An empty message names what it carried.** A sticker, a photo without a
-  caption or a poll reached the assistant as an empty string. It now arrives as
-  `[no text: sticker]`.
-- **Another bot's traffic can be left alone** — new per-chat setting
-  `ignore_other_bots`, **off by default**. When on, a command or mention aimed
-  at another bot does not become a request. Three escapes keep it from doing
-  harm: it fires only for usernames ending in `bot` (Telegram's own rule, so a
-  mention of a person is untouched), never when our own name is unknown, and
-  never when we are named later in the text. Stand: `test_other_bot.py`,
-  10 checks.
-- **Typo-tolerant addressing** (`fuzzy_address`): the name with one wrong letter
-  still calls the bot, with the slack bounded so unrelated words do not.
-  Stand: `test_fuzzy_address.py`, 7 checks.
-- **Anti-flood** (`flood_muted`): over `FLOOD_N` messages in `FLOOD_T` seconds
-  mutes a sender for `FLOOD_K` minutes with exactly one notice. Nobody is
-  exempt, the principal included. Stand: `test_flood.py`, 6 checks.
-- **Open eyes shown as a list** (`pending_eyes`): the bridge never takes the eye
-  off by itself — it puts what is still unanswered under the assistant's nose.
-  Stand: `test_pending_eyes.py`, 6 checks.
-- **Log rotation** (`rotate_log`): past `LOG_MAX_BYTES` the chat log moves to a
-  single backup instead of growing without bound.
+Closes the race on the state books deferred in v1.16 (a finding of the "races"
+lens).
 
-Two defects found by running the suite rather than by reading it:
+**One lock and an atomic write for grants.json / rules.json.** These lists are
+edited read-modify-write from TWO threads: the main one (`_close` via `decide`)
+and the pump (`spend_grant`, and `sweep_proposals`→`_close`). Without a shared
+lock two threads read the same list, each appended its own entry and wrote over
+the other — an edit was lost. The worst consequence: `spend_grant` sets `used_at`
+while a concurrent `_close` overwrites the list without it — **a one-off consent
+came back to life**, and the file could go out again without a new "yes". Now
+`_STATE_LOCK` (an RLock) serialises every edit, and `_atomic_write` (tmp →
+`os.replace`) prevents a reader (`rule_for`/`grant_for` in the pump) from seeing
+half a file.
 
-- `test_attach.py` was **red at HEAD**. Its signature pair looked two chat ids up
-  in `chats.json` — a file a fresh clone does not have — so both fell through to
-  the same defaults and the pair could not fail for the right reason. The pair is
-  now constructed, with a control that the two cases genuinely differ.
-- Four files carried a **real private group id** as example data. Replaced with
-  an obviously fictional one.
+**A decision is made exactly once.** Two paths race to close one proposal: the
+mark (`decide`, main thread) and expiry (`sweep_proposals`, pump). Whoever takes
+the lock first decides; the loser finds the `decided/` record already written and
+leaves. There is no more mixed state in which the consent book says EXPIRED while
+a grant has nonetheless been created. `test_locks.py` pins it: a repeated `_close`
+neither duplicates the grant nor overwrites the verdict.
+
+## v1.16.0 — 2026-08-23
+
+A pass over the code through five lenses (races, resources, correctness,
+security, silent failures). Thirteen real bugs found and closed; 8/8 tests green,
+`test_eyes.py` added (13 checks).
+
+**The mark lies less.** Three repairs of one class, "did it ≠ recorded it". A file
+answer carrying `answers` silently did NOT close the request (the file branch of
+`flush_outbox` had no `clear_inbox`) — the eye hung, and twenty minutes later a
+false "nobody picked it up" flew. A `.react.json` cleared the inbox even when the
+mark had NOT landed (it did not look at `how`) — "answered" written over
+emptiness. And `clear_inbox` now sets the mark BEFORE the move into `served`
+rather than after: a failed ack no longer leaves an empty inbox under a burning 👀.
+
+**A reminder's receipt counts only from an approver** (`_seen`). The docstring
+promised "the principal reacted" while the code accepted ANY reaction — in a group
+a stranger could silently cancel an escalation. Three lenses found it separately.
+We now require an `approver`, which also cuts out the bridge's own marks.
+
+**Delivery no longer dies on a naive date.** `rule_for` caught only `ValueError`,
+while a deadline without a timezone raises `TypeError` — it escaped `flush_outbox`
+and cut off EVERY send on every pass. We normalise to UTC.
+
+**Silent losses, spoken aloud.** A voice note that failed to download used to be a
+bare `return` (leaving the sender on 🤔 for ever): now a log line and a word to
+them. A job thread died silently and took the message with it: the `_guarded`
+wrapper prints the traceback. A broken or foreign outbox item went into an endless
+retry: it is quarantined in `outbox/rejected/` — with the safeguard that a broken
+`chats.json` (an empty list) is NOT quarantined, or the whole outbox would be
+poured away. A broken `chats.json`/`settings.json` now shouts its reason instead
+of going mute.
+
+**Less leaking, less breaking.** The anti-flood dictionaries are cleaned (they
+grew without bound). `log_line` runs under a lock — long lines from threads no
+longer interleave into broken JSONL. Service wake-up requests
+(`reaction-`/`control-`/`verdict-`/`pending-eyes-`) are swept out of `requests/`
+by age (`SERVICE_REQUEST_KEEP_HOURS`; `needsfile-` is NOT touched — that is an
+open request).
+
+**An honest calibration:** the lens reported "service requests accumulate" as
+HIGH; measured, `pending_eyes`/`nudge` already skip them and there are no false
+eyes → in fact LOW.
 
 ## v1.1.0 — 2026-08-22
 
-First version of its own line after `v1.0.0` (an exact copy of the serving tree).
-Work happened in `LogicBridge-dev`; the serving tree stayed untouched throughout.
+The first version of our own line after `v1.0.0` (an exact copy of the serving
+tree). The work happened in the dev tree; the serving tree was not changed.
 
 **Attachments — files and images.** The bridge read only `text` and `caption`, so
-an image without a caption arrived as an EMPTY request. This already cost us a loss:
-on 2026-08-21 a third-party photo landed in the inbox as emptiness and was closed as
-"nothing to answer." Now images, documents, video, and audio are downloaded into
-`media/<request>/`, enter the request via the `files` field with name, size, type,
-and fingerprint, and if there's no caption the request describes itself and is never
-empty.
+an image without a caption arrived as an EMPTY request. That had already cost a
+loss: on 2026-08-21 a screenshot from a third party landed in the inbox as
+emptiness and was closed as "nothing to answer". Now images, documents, video and
+audio are downloaded into `media/<request>/`, enter the request through a `files`
+field carrying name, size, type and digest, and when there is no caption the
+request describes itself and is never empty.
 
-The trust boundary shifted from text to bytes; how that's held is in `PROTOCOL.md`,
-including the rule "reading is allowed, executing is not" and an explanation of why a
-blocklist of forbidden extensions was considered and rejected.
+The trust boundary moved from text to bytes; what holds it is in `PROTOCOL.md`,
+including the rule "reading is allowed, executing never is" and the explanation of
+why a list of forbidden extensions was considered and rejected.
 
-**The signature is configurable per chat, and an empty signature works.** Previously
-`pol.get("reply_prefix") or C.REPLY_PREFIX` silently returned the name: an empty string
-is falsy in Python. Now the PRESENCE of the key is checked, and "configured to empty"
-is distinct from "not configured." Both outward signatures — outbound text and the
-relay of someone else's words in a translation — are chosen earlier and left untouched:
-text bound for the outside must say whose it is.
+**The signature is configurable per chat, and an empty signature works.**
+Previously `pol.get("reply_prefix") or C.REPLY_PREFIX` silently returned the name:
+an empty string is falsy in Python. Now the PRESENCE of the key is checked, and
+"configured to empty" differs from "not configured". Both outward signatures — text
+to be sent on, and a relay of someone else's words in translation — are chosen
+earlier and are untouched: text that will travel outward must say whose it is.
 
-Two functions were extracted so the decision can be tested rather than eyeballed:
-`outgoing_prefix(pol, item)` and `compose(prefix, text)`.
+Two functions were extracted so the decision could be tested rather than
+contemplated: `outgoing_prefix(pol, item)` and `compose(prefix, text)`.
 
-**Tested offline, no network:**
+**Tested offline, with no network:**
 
-    test_gate.py     20 passed, 0 failed   (consent gate, untouched)
-    test_attach.py   25 passed, 0 failed   (attachments, name as data, signature)
+    test_gate.py     20 passed, 0 failed   (the consent gate, untouched)
+    test_attach.py   25 passed, 0 failed   (attachments, a name as data, the signature)
 
 `test_attach.py` was created by this version.
 
 ## v1.2.0 — 2026-08-22
 
-**Attachment cleanup by OVERFLOW, not by age** (the curator's word: "not by age, but
-by overflow; allot however many bytes you need yourself"). Budget 2 GiB: a per-file
-ceiling of 20 MB, so a hundred of the largest attachments or on the order of seventeen
-thousand images at the current size. Normal use will never hit the wall; a runaway
-sender hits it fast and won't eat the disk.
+**The attachment sweep goes by OVERFLOW, not by age** (the operator's word: "not
+by age but by overflow, allot however many bytes you need yourself"). A budget of
+2 GiB: with a 20 MB ceiling per file that is a hundred of the largest attachments
+or some seventeen thousand screenshots at their present size. Ordinary use will
+never reach it; a runaway sender reaches it quickly and eats no disk.
 
-Three cleanup rules: a request's directory is deleted whole (one message's attachments
-are one thing); **a request directory that hasn't been answered yet is never touched**;
-every deletion is printed with its size, because silent cleanup is indistinguishable
-from loss. If there's nothing to clean up and space has run out, the bridge says so out
-loud rather than resigning itself in silence.
+Three rules for the sweep: a request's directory is deleted whole (the
+attachments of one message are one thing); **a request's directory that has not
+been answered yet is never touched**; and every deletion is printed with its size,
+because a silent sweep is indistinguishable from a loss. If there is nothing to
+clear and the space has run out, the bridge says so out loud rather than
+accepting it in silence.
 
-**Found along the way and fixed: `sweep_old_files` was written and NEVER CALLED.** Its
-docstring promised that voice doesn't pile up forever; the promise held only because the
-bridge is young and hasn't yet lived thirty days. Now both cleanups are called on the
-same tick as proposal expiry.
+**Found along the way and fixed: `sweep_old_files` had been written and NEVER
+CALLED.** Its docstring promised that voice would not pile up for ever; the
+promise held only because the bridge was young and had not lived thirty days yet.
+Both sweeps are now called on the same tick as the expiry of proposals.
 
     test_gate.py     20 passed, 0 failed
-    test_attach.py   34 passed, 0 failed   (+9 for cleanup)
+    test_attach.py   34 passed, 0 failed   (+9 for the sweep)
 
 ## v1.3.0 — 2026-08-22
 
-**The bridge learned to SEND files.** Since v1.1.0 it received them but didn't send;
-to the request "send a file to the chat" the honest answer was "I can't." Now both
-directions.
+**The bridge learned to GIVE files back.** Since v1.1.0 it accepted them but did
+not send them; to "send the file into the chat" the honest answer was "I cannot".
+Now both directions work.
 
-`send_file(chat_id, path, caption, as_photo)` — its own multipart assembly, no
-third-party libraries; a separate function rather than a parameter to `call`, because
-an ordinary call encodes fields urlencoded and a file can't be passed that way. Mixing
-two ways of talking to one API means hiding a difference that will bite later.
+`send_file(chat_id, path, caption, as_photo)` — multipart assembled by hand, with
+no third-party libraries; a separate function rather than a parameter to `call`,
+because an ordinary call encodes its fields as urlencoded and a file cannot
+travel that way. Mixing two ways of talking to one API would hide a difference
+that bites later.
 
-The caption is truncated to 1024 characters UP FRONT — that's what the Bot API allows.
-Otherwise the server would reject the whole thing, and the file wouldn't go out because
-of an extra line of text.
+The caption is cut to 1024 characters IN ADVANCE — that is what the Bot API
+allows. Otherwise the server would refuse the whole request and the file would
+not go out because of one extra line of text.
 
-The outgoing queue gained a `file` field; a failure renames the queue file to `failed-*`
-rather than staying silent.
+The outgoing queue gained a `file` field; a failure renames the queue file to
+`failed-*` rather than staying silent.
 
     test_gate.py     20 passed, 0 failed
     test_attach.py   39 passed, 0 failed   (+5)
 
 ## v1.4.0 — 2026-08-22
 
-**A gate on sending files, and confirmation moves from the instance to the RULE.**
-The curator's word: "files aren't just little letters anymore, we need to guard against
-a fool… but confirming every single time is a pain. Go by a rule log: send a familiar
-class, ask about something new, and don't ask at all about what was agreed before."
+**A gate on sending files, and the confirmation moves from the instance to the
+RULE.** The operator's word: "files are not letters any more, there has to be
+protection against a fool… but a confirmation every single time is a pain. It
+should go by a book of rules: for this project just send, ask about something
+new, and about what was agreed earlier and is ready in the folder do not ask at
+all."
 
-How it works. An empty log permits NOTHING — by default everything is asked. A rule
-binds three things, all three required: the recipient room, the source directory, and
-a name pattern. A rule of "anything anywhere" simply CAN'T BE EXPRESSED in this format —
-the field is mandatory, and a prohibition that can't be bypassed through forgetfulness
-is more reliable than one you have to remember.
+The design. An empty book allows NOTHING — by default everything is asked about.
+A rule binds three things, all of them required: the receiving room, the source
+directory and a name pattern. A rule of the "anything anywhere" kind simply
+CANNOT BE EXPRESSED in this format — the field is mandatory, and a prohibition
+that cannot be walked around by forgetfulness is sturdier than one that has to be
+remembered.
 
-**A rule cannot originate from the assistant.** It is written by the bridge and only on
-the curator's mark, together with his numeric identifier, the mark itself, and the
-proposal number. A rule without an approver is skipped with a scandal in the log. The
-same one produces the object that constrains it.
+**A rule cannot come from the assistant.** It is written by the bridge and only
+on the operator's mark, together with their numeric id, the mark itself and the
+proposal's number. A rule with no approver is skipped with a scandal in the log.
+The same prohibition stated for warrants: the constrained party does not
+manufacture the object that constrains it.
 
-The path is collapsed to its real form before comparison, so
-`allowed-folder/../../anything` doesn't pass. An unreadable expiry date is interpreted
-NOT in favor of sending.
+The path is resolved to its real form before comparison, so
+`allowed-folder/../../anything` does not pass. An unreadable expiry date is read
+AGAINST sending.
 
-A rule removes the question UP FRONT — which means the check remains only AFTER, and it
-must exist: every send by a rule writes a line to `sent_by_rule.log` with the rule
-number. Otherwise a standing permission becomes a blind spot.
+A rule settles the question IN ADVANCE — so the only check left is AFTERWARDS,
+and it must exist: every send under a rule writes a line into `sent_by_rule.log`
+with the rule's number. Otherwise a standing permission becomes a blind spot.
 
 `./propose.py --file-rule <directory> --to <room> [--glob] [--why] [--until]`
 
     test_gate.py     20 passed, 0 failed
-    test_attach.py   50 passed, 0 failed   (+11 for the gate, including the bypass via ..)
+    test_attach.py   50 passed, 0 failed   (+11 on the gate, including .. traversal)
 
 ## v1.7.0 — 2026-08-22
 
-**Batch: one mark — one parcel.** The curator: "if you need to send someone five files,
-will you ask once or for all five?" It asked five times, and that's torment.
+**A batch: one mark — one delivery.** The operator: "if five files have to go to
+someone, will you ask once or all five times?" It asked five times, and that is a
+mockery.
 
-But "one mark per list" couldn't just be done: this very file has recorded since day one
-that a mark under a list of five tasks becomes a rubber stamp within a week. The
-difference that decides everything: five DIFFERENT tasks under one mark is a rubber
-stamp; five files of ONE parcel to ONE room is one task with five parts. The unit of
-consent is the one a person thinks about, not a byte count.
+But "one mark for a list" could not simply be built: this very file has said from
+day one that a mark under a list of five items becomes a rubber stamp within a
+week. The difference that settles it: five DIFFERENT matters under one mark is a
+stamp; five files of ONE delivery into ONE room are one matter with five parts.
+The unit of consent is the one a person thinks in, not a number of bytes.
 
 Three conditions, each closing its own hole:
 
-    one recipient per batch     mixing rooms is forbidden — that's where the error hides
-    every file named            name, size, fingerprint right in the proposal;
-                                the mark covers WHAT WAS SEEN
-    one-time and by fingerprint swapping the file after the mark doesn't pass,
-                                the same permission won't fire a second time
+    one recipient per batch    mixing rooms is forbidden — that is where the
+                               mistake hides
+    every file is named        name, size, digest right in the proposal;
+                               the mark covers WHAT WAS SEEN
+    one-off and by digest      swapping a file after the mark does not pass,
+                               and the same grant will not fire twice
 
-The ceiling `batch_max` = 10. A list you can't read with your eyes is a rubber stamp,
-whatever you call it; for a stream you set up a RULE on a folder, not a bigger batch.
+The ceiling `batch_max` = 10. A list too long to read with your eyes is a stamp,
+whatever it is called; for a stream of files one makes a RULE on the folder, not a
+bigger batch.
 
-One-time permissions live in `grants.json` SEPARATELY from rules by design: a rule
-describes a class and acts henceforth, a permission is named by fingerprint and is spent
-once. In one file you couldn't tell them apart a month later.
+One-off grants live in `grants.json` SEPARATELY from rules on purpose: a rule
+describes a class and holds from now on, a grant is named by a digest and is
+spent once. In one file, a month later, the two would be indistinguishable.
 
 `./propose.py --batch f1 f2 … --to <room> [--why ...]`
 
     test_gate.py     20 passed, 0 failed
-    test_attach.py   69 passed, 0 failed   (+7 for the batch, including swap and replay)
+    test_attach.py   69 passed, 0 failed   (+7 on batches, including a swap and a repeat)
 
 ## v1.8.0 — 2026-08-22
 
-Three things, on the curator's word "all three."
+Three things, by the operator's word "all three".
 
-**A dead end I built myself this morning.** A refused file landed in `needs_consent/`
-and just sat there: not a line to the inbox, no way back. A dead end no one knows about
-is indistinguishable from loss. Now a refusal WAKES the assistant — the request in the
-inbox names the file, the room, and a ready-made command to hang it on a mark.
+**A dead end I built myself that morning.** A refused file landed in
+`needs_consent/` and stayed there: no line in the inbox, no way back. A dead end
+nobody knows about is indistinguishable from a loss. Now a refusal WAKES the
+assistant — a request in the inbox names the file, the room, and the ready command
+to hang it on a mark.
 
-**The badge no longer lies.** 👀 means "saved, and will be answered" — that's a promise,
-and if the assistant isn't running, there's no one to keep it, while a person on the
-outside can't tell "being read" from "forgotten." The bridge, the only one here that's
-definitely alive, speaks for itself: "received, but in N minutes no one has picked it
-up." ONCE per message — otherwise it's a racket that gets muted. Threshold 20 minutes.
+**The mark no longer lies.** 👀 means "stored, and it will be answered" — that is
+a promise, and if the assistant is not running there is nobody to keep it, while
+from outside a person cannot tell "being read" from "forgotten". The bridge, the
+one party here that is certainly alive, speaks for itself: "received, but for N
+minutes nobody has picked it up". ONCE per message — otherwise it is a nuisance
+that gets switched off. The threshold is 20 minutes.
 
-**The tamper watchdog refuses rather than warns** (`drift.py`, §7 of the owner's
-decision). The bridge checks the fingerprints of its thirteen files against the approved
-state BEFORE the first network call and won't come up on a mismatch: its own return code
-90, a record in `drift_refusals.jsonl`. The absence of an approved state is also a
-refusal, not a permit by default. A broken watchdog is a refusal (code 91): a watchdog
-that lets things through when it's itself broken guards only in good weather. The
-watchdog watches itself too.
+**The tamper watch refuses rather than warns** (`drift.py`, §7 of the owner's
+decision). The bridge compares the digests of thirteen of its files against the
+approved state BEFORE the first network call and does not start on a divergence:
+its own exit code 90, a record in `drift_refusals.jsonl`. The absence of an
+approved state is also a refusal, not a default allow. A broken watch is a refusal
+too (code 91): a watch that lets things through when it is itself broken guards
+only in fair weather. The watch watches itself as well.
 
-The honest boundary is named in the file itself: it does NOT protect against someone who
-has access to the directory. It catches an edit that slipped past the transfer — exactly
-the breed of failure we got caught on 2026-08-21.
+The honest boundary is named in the file itself: it does NOT protect against
+anyone with access to the directory. It catches an edit that bypassed the
+rollout — exactly the kind of failure we were caught by on 2026-08-21.
 
     test_gate.py     20 passed, 0 failed
     test_attach.py   77 passed, 0 failed   (+8)
-
-## v1.9.0 — 2026-08-23
-
-A pass over the code through several lenses (races, silent failures, correctness).
-Eleven fixes of the "did ≠ recorded" and "silent loss" class.
-
-**The badge lies even less.** A file reply with `answers` now closes the named request
-(the file branch of `flush_outbox` had no `clear_inbox` — the file went out but the 👀
-stayed hanging). `.react.json` no longer clears a request if the mark DIDN'T land
-(invalid emoji/network): "answered" on top of emptiness is inadmissible. `clear_inbox`
-sets the mark BEFORE moving to `served`, not after.
-
-**A reminder's receipt counts only from an approver** (`_seen`). Previously ANY reaction
-cleared the escalation — in a group an outsider could silently remove it. Now an
-`approver` is required; the bridge's own marks are cut off at the same time.
-
-**Dispatch doesn't crash on a naive date.** `rule_for` caught only `ValueError`, but a
-deadline without a timezone raises `TypeError` — it aborted ALL sends every pass. We
-normalize to UTC.
-
-**Silent losses — out loud.** A failed voice download is no longer a bare `return`: a
-log entry plus a word to the sender. A worker-thread crash prints a traceback
-(`_guarded`) rather than carrying the message off silently. A corrupt/foreign `outbox`
-goes to `outbox/rejected/` instead of retrying forever — with a safeguard that a broken
-`chats.json` (empty list) is NOT penalized. A broken `chats.json`/`settings.json` now
-names the reason.
-
-**Small but important.** `log_line` is under a lock — long lines from threads no longer
-interleave into corrupt JSONL. `from_principal` doesn't elevate privileges on a message
-without a sender (`is not None` first).
-
-## v1.10.0 — 2026-08-23
-
-**One lock and atomic writes on `grants.json` / `rules.json`.** These lists are edited
-read-modify-write from TWO threads: the main one (`_close` via `decide`) and the pump
-(`spend_grant`, and also `sweep_proposals`→`_close`). Without a shared lock, two threads
-read the same list, each appended its own and wrote over the top — an edit was lost. The
-worst consequence: `spend_grant` sets `used_at`, while a parallel `_close` overwrites the
-list without it — a one-time consent came back to life, the file could go out again
-without a new "yes." Now `_STATE_LOCK` (RLock) serializes edits, and `_atomic_write`
-(tmp → `os.replace`) keeps a reader from seeing a half-file.
-
-**Exactly one decision.** The mark (`decide`) and expiry (`sweep_proposals`) race to
-close one proposal; whoever takes the lock first decides, the loser sees the
-already-written `decided/` and exits. There's no mixed state where the log says EXPIRED
-but a permission was created. `test_locks.py` locks this in.
-
-## v1.11.0 — 2026-08-23
-
-**The approver of a rule/permission is a REAL approver, not just a non-empty field.**
-`rule_for`/`grant_for` checked only the NON-EMPTINESS of `added_by_user_id`; an arbitrary
-nonzero id (corruption of `grants.json`/`rules.json`, a manual edit past the gate) used
-to pass. Now the id must be an approver of at least one chat (`config.all_approvers()`).
-Backward-compatible: live rules from the principal pass; a "folder→group" rule approved
-in a private chat doesn't break. `test_attach` locks it in: an id not among the approvers
-is rejected.
-
-## v1.12.0 — 2026-08-23
-
-**A list of open eyes on EVERY request (`open_eyes`).** 👀 = not handled; the principal
-navigates by them. The pending report saw only the fresh ones in `requests/`, while those
-moved to `served` after 6h fell out of sight — over a long session more than a hundred
-unclosed ones piled up that way. Now `open_eye_backlog(chat_id)` counts the WHOLE open
-set (addressed, given 👀, MINUS those closed via `answers`), from files, with a 10s cache,
-and the `open_eyes=[id…]` field is placed in every request to the assistant — the one that
-fired is before your eyes on the next message and gets closed rather than lost. The
-close-path is untouched.
-
-## v1.13.0 — 2026-08-23
-
-**An invalid `done_emoji` no longer leaves 👀 hanging — falls back to 👍 and
-notifies the assistant.** Telegram accepts reactions only from
-`config.VALID_REACTIONS`; on anything else `ack()` refused and returned without
-touching the reaction, so a close moved the request to `served/` (the assistant
-read it as answered) while 👀 stayed on the phone — 26 piled up unseen in one
-session. Now an invalid `done_emoji` on an eye-close is replaced with 👍 (the
-eye always closes) and the bridge writes `requests/emoji-notice-*.json` so the
-assistant sees, in a file (it never reads the stdout log), that its emoji was
-invalid and 👍 was used instead.
-
-## v1.14.0 — 2026-08-24
-
-**Eyes 👀 on MY OWN messages (from the principal's reactions) now join the list
-and can be closed, like any other eye.** When the principal reacts to one of my
-messages, `handle_reaction` puts `ack()` = 👀 on it and files
-`reaction-<chat>-<mid>.json`. But `open_eye_backlog` matched only `<mid>-<chat>`
-names — so that eye was invisible to the list and hung forever. Now `got` also
-counts `reaction-<chat>-<mid>` (keyed by mid); closing through `answers`
-recognises that id (mid parsed off the END via `rsplit`, so a negative group
-chat in the middle stays intact) and places `done_emoji` on my message; the
-`closed` set understands the reaction id. Adds `test_reaction_eyes.py`.

@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 # Copyright 2026 Vitaly Reznik
 # SPDX-License-Identifier: Apache-2.0
-"""Tamper watchdog: refuse to run if what's on disk isn't what was approved.
+"""Tamper watch: refuse to run when what is on disk is not what was approved.
 
     ./drift.py --check     compare and return an exit code
-    ./drift.py --approve   record the current state as approved
+    ./drift.py --approve   record the present state as the approved one
 
-THE HONEST BOUNDARY, AND IT MUST BE STATED FIRST. This watchdog does NOT protect
-against anyone with access to the bridge's directory: whoever can edit
-`tg_bridge.py` can also edit `approved_manifest.json` and this very file. From day
-one the package has said that a compromised machine is a compromised bot, and
-nothing has changed here.
+THE HONEST BOUNDARY, NAMED FIRST. This watch does NOT protect against anyone
+with access to the bridge's directory: whoever can edit `tg_bridge.py` can also
+edit `approved_manifest.json` and this file itself. The package has said from
+day one that a compromised machine is a compromised bot, and nothing here
+changes that.
 
-What it DOES CATCH: an edit that slipped past a deployment. A file patched on the
-live tree "just for a minute"; a deployment that didn't fully land; a divergence
-between what was tested and what is running. This is exactly the kind of failure
-that caught us out on 2026-08-21, and it happens with no ill intent at all.
+What it DOES catch: an edit that bypassed the rollout. A file fixed on the live
+tree "just for a minute"; a rollout that did not finish; a gap between what was
+tested and what is running. That is exactly the kind of failure that caught us
+on 2026-08-21, and it happens with no ill intent at all.
 
-WHY REFUSE RATHER THAN WARN. A warning is addressed to a reader who may not be
-there. A bridge that rolls on with unverified code is serving the gates of
-consent — that is, it decides what counts as permission. Something like that is
-better off not running at all than running as who-knows-what.
+WHY A REFUSAL AND NOT A WARNING. A warning is addressed to a reader who may not
+be there. A bridge that carries on with untested code is serving the consent
+gate — that is, deciding what counts as permission. Such a thing had better not
+run at all than run as something unknown.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 import config as C
 
-EXIT_DRIFT = 90          # our own code: a tamper refusal must NOT be confused with a crash
+EXIT_DRIFT = 90          # its own code: a tamper refusal must not look like a crash
 WATCHED = ("tg_bridge.py", "config.py", "propose.py", "pending.py", "react.py",
            "edit.py", "unreact.py", "seal.py", "gate_health.py", "drift.py",
            "rules.py", "test_gate.py", "test_attach.py")
@@ -41,13 +41,13 @@ REFUSALS = C.ROOT / "drift_refusals.jsonl"
 
 
 def manifest() -> dict[str, str]:
-    """Fingerprints of what is actually running.
+    """Digests of what actually runs.
 
-    A LIST OF NAMES IS NOT ENOUGH, and that was a hole. A watchdog that knows only
-    its own roster won't notice a NEW file — and Python itself picks up certain
-    things by name (`sitecustomize.py`), and any new module alongside it could be
-    imported by tomorrow's edit. So we take both the roster AND every .py in the
-    directory: a file appearing is just as much a divergence as one changing.
+    A LIST OF NAMES IS NOT ENOUGH, and that was the hole. A watch that knows
+    only its own list will not notice a NEW file — and Python itself picks some
+    up by name (`sitecustomize.py`), while any new module alongside may be
+    imported by tomorrow's edit. So we take both the list and EVERY .py in the
+    directory: a file appearing is as much a divergence as a file changing.
     """
     out = {}
     names = set(WATCHED) | {p.name for p in C.ROOT.glob("*.py")}
@@ -59,13 +59,13 @@ def manifest() -> dict[str, str]:
 
 
 def check() -> tuple[bool, dict]:
-    """(everything matches, details). A missing manifest is NOT a reason to wave it through."""
+    """(everything matches, details). A missing manifest is NOT a reason to pass."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cur = manifest()
     if not APPROVED.exists():
         return False, {"at": now, "reason": "NO_APPROVED_MANIFEST",
-                       "note": "there is no approved state — nothing to compare against, "
-                               "and that is a refusal, not a default allow"}
+                       "note": "there is no approved state — nothing to compare "
+                               "against, and that is a refusal, not a default allow"}
     old = json.loads(APPROVED.read_text(encoding="utf-8")).get("files", {})
     changed = {k: {"approved": old.get(k), "now": v}
                for k, v in cur.items() if old.get(k) != v}
@@ -81,7 +81,7 @@ def main(argv: list[str]) -> int:
     if "--approve" in argv:
         APPROVED.write_text(json.dumps(
             {"approved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-             "note": "recorded at deployment; see the deployment receipt",
+             "note": "recorded during the move; see the move receipt",
              "files": manifest()}, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"approved {len(manifest())} files -> {APPROVED.name}")
         return 0
@@ -97,10 +97,10 @@ def main(argv: list[str]) -> int:
         print(f"    changed  {k}\n        approved {str(v['approved'])[:16]}…"
               f"\n        now      {str(v['now'])[:16]}…")
     for k in (detail.get("removed") or []):
-        print(f"    GONE     {k}")
+        print(f"    MISSING  {k}")
     for k in (detail.get("added") or []):
         print(f"    appeared {k}")
-    print(f"refusal recorded in {REFUSALS.name}")
+    print(f"the refusal is recorded in {REFUSALS.name}")
     return EXIT_DRIFT
 
 

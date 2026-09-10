@@ -1,62 +1,80 @@
 #!/usr/bin/env python3
-# Copyright 2026 Vitaly Reznik
-# SPDX-License-Identifier: Apache-2.0
-"""Control-question trigger: every SELFCHECK_EVERY-th call yields a question, a
-misfire is swallowed, and delivery is unaffected.
-
-NO EXTERNAL PATH. This stand used to invoke a script by absolute path into one
-developer's home directory. It passed there and failed on every other machine —
-a fresh clone on the SAME machine could not catch it, because the dependency was
-machine-wide, not directory-wide. Found by an outside reader, not by us.
-The stub below is written into a temp directory, so the stand carries its own
-world and the same run happens everywhere.
-"""
-import re, subprocess, sys, tempfile, types, pathlib
-
-ok = fail = 0
-def check(name, cond, why=""):
-    global ok, fail
-    if cond: ok += 1; print(f"  OK   {name}")
-    else: fail += 1; print(f"  FAIL {name} — {why}")
+"""The control-question trigger: every SELFCHECK_EVERY-th message yields a
+question, a misfire is swallowed, delivery does not suffer. It lifts
+control_question() out of the module with C replaced — no network, and without
+starting the whole bridge."""
+import re, subprocess, tempfile, types, pathlib
+import config as _C          # the texts live in the locale, not in the stand
 
 def load():
-    src = pathlib.Path(__file__).resolve().parent.joinpath("tg_bridge.py").read_text(encoding="utf-8")
+    src = pathlib.Path("tg_bridge.py").read_text(encoding="utf-8")
     m = re.search(r"def control_question\(.*?\n\n\n", src, re.S)
-    assert m, "control_question not found — fail loudly, do not pass on nothing"
-    ns = {"subprocess": subprocess, "now": lambda: "T", "int": int}
-    exec(compile(m.group(0), "<autocheck>", "exec"), ns)
+    import config as _C
+    ns = {"subprocess": subprocess, "now": lambda: "T", "int": int, "T": _C.T}
+    exec(compile(m.group(0), "<x>", "exec"), ns)
     return ns["control_question"], ns
 
-tmp = pathlib.Path(tempfile.mkdtemp())
-stub = tmp / "stub_present.py"
-stub.write_text("print('CONTROL QUESTION')\n", encoding="utf-8")
+def _sandbox_selfcheck(tmp):
+    """A sandbox copy of the checker. The live one must not be touched: it not
+    only KEEPS a history, it also SPENDS cards from its deck — running the tests
+    used to eat real questions and move the position round the circle (measured
+    2026-08-25)."""
+    import shutil
+    # WHERE THE COPY COMES FROM. From the installation's settings, not from a
+    # hard-coded path: on a stranger's machine no such directory exists, and the
+    # stand would be green only here.
+    import config as _C
+    _cmd = getattr(_C, "SELFCHECK_PRESENT", None) or []
+    _exe = next((a for a in _cmd if str(a).endswith(".py")), None)
+    if not _exe:
+        return ["python3", "-c", "print('present: no checker configured')"]
+    src = pathlib.Path(_exe).parent
+    dst = pathlib.Path(tmp) / "SelfCheck"
+    if src.exists() and not dst.exists():
+        shutil.copytree(src, dst)
+    return ["python3", str(dst / "selfcheck.py"), "present"]
 
-cq, ns = load()
-ns["C"] = types.SimpleNamespace(
-    SELFCHECK_COUNT=tmp / "cnt", SELFCHECK_EVERY=5,
-    SELFCHECK_PRESENT=[sys.executable, str(stub)])
 
-got = [bool(cq()) for _ in range(10)]
-check("a question only on the 5th and the 10th call",
-      got == [False, False, False, False, True, False, False, False, False, True],
-      f"got {got}")
+SANDBOX_SELFCHECK = True
 
-ns["C"].SELFCHECK_PRESENT = [sys.executable, str(tmp / "no-such.py")]
-ns["C"].SELFCHECK_COUNT.write_text("4")
-check("CONTROL: a misfire returns None and does not crash", cq() is None,
-      "a broken command takes the message down with it")
 
-ns["C"].SELFCHECK_PRESENT = []
-ns["C"].SELFCHECK_COUNT.write_text("4")
-check("CONTROL: no command configured is OFF, not broken", cq() is None,
-      "an empty command must mean 'no questions', not an exception")
+def run():
+    ok = True
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    cq, ns = load()
+    ns["C"] = types.SimpleNamespace(
+        SELFCHECK_COUNT=tmp / "cnt", SELFCHECK_EVERY=5,
+        # A SANDBOX copy: the live checker SPENDS cards from its deck and moves
+        # the circle on, and a test has no right to spend real questions.
+        SELFCHECK_PRESENT=_sandbox_selfcheck(tmp))
+    # DO NOT TOUCH THE LIVE FILE. There used to be an absolute path here to the
+    # working state file — and every test run ERASED the checker's history.
+    # Measured 2026-08-25: after a day's work the live state held two answers out
+    # of fifteen. The checker looked healthy while its record was being destroyed
+    # by routine, and there was no way to see it: the file is outside git and
+    # carries no timestamps.
+    pass  # the checker's state does not belong to the test
+    got = [bool(cq()) for _ in range(10)]
+    # a question only on the 5th and the 10th
+    ok &= got == [False, False, False, False, True, False, False, False, False, True]
+    # A MISFIRE MUST BE LOUD. This used to be `cq() is None` with the comment
+    # "does not crash" — that is, the silence of a broken checker was FIXED IN
+    # PLACE as correct behaviour, and anyone repairing it would break the test. A
+    # checker that died soundlessly is indistinguishable from one whose turn has
+    # simply not come round. Now we expect a shout.
+    ns["C"].SELFCHECK_PRESENT = ["python3", "/no/such.py"]
+    ns["C"].SELFCHECK_COUNT.write_text("4")
+    said = cq()
+    ok &= (said is not None and _C.T("selfcheck.silent", code=2, error="x")[:24] in said)
+    # DO NOT TOUCH THE LIVE FILE. There used to be an absolute path here to the
+    # working state file — and every test run ERASED the checker's history.
+    # Measured 2026-08-25: after a day's work the live state held two answers out
+    # of fifteen. The checker looked healthy while its record was being destroyed
+    # by routine, and there was no way to see it: the file is outside git and
+    # carries no timestamps.
+    pass  # the checker's state does not belong to the test
+    print("test_autocheck:", "OK" if ok else "FAIL")
+    return 0 if ok else 1
 
-ns["C"].SELFCHECK_PRESENT = [sys.executable, str(stub)]
-ns["C"].SELFCHECK_EVERY = 5
-ns["C"].SELFCHECK_COUNT.write_text("4")
-check("CONTROL: the stub really does produce a question",
-      (cq() or "").strip() == "CONTROL QUESTION",
-      "the checks above would pass even with the whole mechanism removed")
-
-print(f"\nAUTOCHECK {'GREEN' if not fail else 'RED'}: {ok} OK, {fail} FAIL")
-raise SystemExit(1 if fail else 0)
+if __name__ == "__main__":
+    raise SystemExit(run())

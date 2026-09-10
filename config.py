@@ -48,12 +48,12 @@ def _settings() -> dict:
         import json as _j
         return _j.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {}                      # no file — normal, use defaults
+        return {}                      # no file is normal; take the defaults
     except Exception as e:
-        # BROKEN JSON — NOT SILENTLY. A typo in settings.json used to drop all
-        # settings to defaults without a word; the cause was hunted blind.
+        # BROKEN JSON IS NOT SILENT. A typo in settings.json used to drop every
+        # setting back to its default without a word; the cause was hunted blind.
         import sys
-        print(f"[config] WARNING: settings.json did not parse ({e}) — using "
+        print(f"[config] WARNING: settings.json did NOT parse ({e}) — using "
               f"empty settings; check the JSON syntax", file=sys.stderr)
         return {}
 
@@ -149,14 +149,6 @@ CHAT_DEFAULTS = {
     # is friction with nothing on the other side of it. The name exists to
     # single the assistant out of a room, so it belongs in rooms.
     "all_addressed": False,
-    # A room can hold more than one assistant. When this is on, a command or
-    # mention aimed at ANOTHER bot (/cmd@TheirBot, "@TheirBot do this") is left
-    # in the log and does not become a request — otherwise a person driving
-    # their own assistant wakes ours on every message.
-    # DEFAULT OFF, and deliberately so: the other bot may also be talking TO us,
-    # and being woken needlessly is cheaper than missing an address. Turn it on
-    # only where the traffic is genuinely someone else's.
-    "ignore_other_bots": False,
     "topic": "not declared",   # the subject of this chat; the assistant stays inside it
     "outward_gate": True,      # actions outside the chat need a mark
     "announce": True,          # one-time notice that the chat is logged
@@ -177,19 +169,20 @@ def _chats() -> dict:
         import json as _j
         raw = _j.loads(CHATS_FILE.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {}                      # no file — stay quiet (may predate setup)
+        return {}                      # no file: stay quiet (may be before setup)
     except Exception as e:
-        # A broken chats.json = allowed()=False for EVERYONE = the bridge goes
-        # mute. This used to be silent while the log filled with "chat NOT
-        # allowed" on the principal's own chat — the real cause (bad JSON) said
-        # nowhere. Read on every message, so throttle to once per 60s.
+        # A BROKEN chats.json = allowed()=False FOR EVERYONE = the bridge goes
+        # mute. This used to happen in silence while the log filled with "chat
+        # NOT allowed" about the principal's own chat — the cause (broken JSON)
+        # was named nowhere. It is read on every message, hence the 60 s
+        # throttle, so as not to flood the log.
         import sys, time
         if time.time() - _CHATS_WARN_AT[0] > 60:
             _CHATS_WARN_AT[0] = time.time()
-            print(f"[config] WARNING: chats.json did not parse ({e}) — the "
-                  f"bridge is MUTE for everyone until it is fixed. The 'chat "
-                  f"NOT allowed' lines below are a consequence, not the cause.",
-                  file=sys.stderr)
+            print(f"[config] WARNING: chats.json did NOT parse ({e}) — the "
+                  f"bridge is MUTE FOR EVERYONE until the JSON is fixed. The "
+                  f"'chat NOT allowed' lines below are a consequence of this, "
+                  f"not the cause.", file=sys.stderr)
         return {}
     return {k: v for k, v in raw.items() if k.lstrip("-").isdigit()}
 
@@ -214,12 +207,12 @@ def approvers(chat_id: int) -> list[int]:
 def all_approvers() -> set[int]:
     """Every id whose mark counts as consent anywhere — the union across chats.
 
-    A rule/grant is only born at the gate (_close under approver=True), but the
-    file on disk can be corrupted or hand-edited past the gate. Checking merely
-    that added_by_user_id is NONEMPTY is not enough: any nonzero id would pass.
-    The approver must be a REAL approver of at least one chat — a random id is
-    rejected. A folder->group rule approved in a private chat still works: the
-    private chat's principal is here too.
+    A rule or grant is only born at the gate (`_close` behind approver=True),
+    but the file on disk can be corrupted or appended to around the gate.
+    Checking merely that `added_by_user_id` is NON-EMPTY is not enough: any
+    non-zero id would pass. The approver must be a REAL approver of at least one
+    chat, which cuts out a random id. A "folder→group" rule approved in a
+    private chat still works: the principal of that private chat is here too.
     """
     out: set[int] = set()
     for cfg in _chats().values():
@@ -285,24 +278,78 @@ ACK_EMOJI = "👀"
 # message — measured 2026-08-22: ✅ is NOT here, so twenty "✅" messages went
 # out and not one 👀 changed. A done-mark must be chosen from THIS set (👍 is
 # the safe default); ✅ ❌ 🟢 ✔️ and most others are not reactions.
-# Control questions, against the assistant losing its context: on every Nth
-# addressed message from the principal the bridge runs selfcheck present as a
-# SEPARATE process (it does not pull ztl.py into itself) and puts the
-# question+disclosure into the request's note. The judge is the code. Crash or
-# timeout — skipped silently: a control question NEVER drops delivery.
-SELFCHECK_EVERY = 5
-# THE COMMAND IS YOURS, NOT OURS. This used to ship a hard-coded absolute path
-# into one developer's home directory: inert (SELFCHECK_EVERY defaults to 0) but
-# still a foreign machine's layout travelling inside a public package, and a
-# reproducibility trap for anyone whose tests happened to touch it.
-# Empty by default: no command, no question, nothing to misfire. Point it at your
-# own script through settings.json ("selfcheck_present": ["python3", "...", ...])
-# if you want control questions at all.
-SELFCHECK_PRESENT = list(_S.get("selfcheck_present", []))
+# Control questions against the assistant losing its context: on every Nth
+# addressed message from the principal the bridge runs "selfcheck present" as a
+# SEPARATE process (it does not pull the checker into itself) and puts the
+# question and its answer into the request's note. The judge is code. A crash or
+# a timeout is skipped in silence: a control question must NEVER cost a delivery.
+# SWITCHED OFF 2026-08-26 by the operator's word, and the reason matters more
+# than the switch. The exam measured the assistant's MEMORY. From that same day
+# a hook tells it to look into the note store on every message — and the
+# assistant honestly looked, while answering a question about Agrippa's
+# trilemma. The operator: "if you look things up straight away then it is not an
+# exam, it is a reminder." The instrument stopped measuring what it was built
+# for, so it says nothing rather than pretending. 0 = ask no questions at all.
+SELFCHECK_EVERY = 0
+# THE PATH TO THE CHECKER COMES FROM SETTINGS, NOT FROM CODE. The checker is an
+# instrument of ONE INSTALLATION; the product does not know about it and must
+# not — a hard-coded absolute path led to a single machine. With no
+# selfcheck_present key the command is empty and no control questions are asked.
+#   "selfcheck_present": ["python3", "~/…/selfcheck.py", "present"]
+SELFCHECK_PRESENT = [str(Path(a).expanduser()) if "/" in str(a) else str(a)
+                     for a in (_S.get("selfcheck_present") or [])]
 VALID_REACTIONS = frozenset(
     "👍 👎 ❤ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 "
     "🌚 🌭 💯 🤣 ⚡ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👀 🎃 🙈 😇 😨 "
     "🤝 ✍ 🤗 🫡 🎅 🎄 ☃ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 😡".split())
+
+# --------------------------------------------------------------------------
+# LANGUAGE
+# --------------------------------------------------------------------------
+# The product speaks English. Every other language is a FILE, not a fork:
+# locale/<code>.json holds the same keys with translated values, and an
+# installation picks one with "lang" in settings.json. A key missing from a
+# translation falls back to English rather than to a blank — a half-translated
+# bridge must still be usable, and a silent empty string is worse than a
+# foreign word.
+#
+# Why keys and not the sentences themselves: the sentences change. When the
+# wording of a warning is edited in English, every translation of it must be
+# findable, and grep over quoted Russian is not a way to find anything.
+LANG = str(_S.get("lang") or "en")
+LOCALE_DIR = Path(__file__).resolve().parent / "locale"
+
+def _load_locale(code: str) -> dict:
+    f = LOCALE_DIR / f"{code}.json"
+    if not f.exists():
+        return {}
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+        return {k: v for k, v in d.items() if not k.startswith("_")}
+    except (ValueError, OSError) as e:
+        print(f"WARNING: locale/{code}.json is not readable ({e}), falling back to English")
+        return {}
+
+_EN = _load_locale("en")
+_LC = _load_locale(LANG) if LANG != "en" else {}
+if LANG != "en" and not _LC:
+    print(f"WARNING: language {LANG!r} not found in locale/, speaking English")
+
+def T(key: str, **kw) -> str:
+    """One phrase for the reader, in the installation's language.
+
+    An unknown key returns the KEY ITSELF, loudly and visibly. Returning "" or
+    the English fallback would hide the mistake exactly where it is hardest to
+    notice — in a language the author does not read.
+    """
+    tpl = _LC.get(key) or _EN.get(key)
+    if tpl is None:
+        return f"?{key}?"
+    try:
+        return tpl.format(**kw) if kw else tpl
+    except (KeyError, IndexError) as e:
+        return f"?{key}: {e}?"
+
 
 # A SUBSTANTIVE REPLY MUST END BY SAYING WHETHER IT NEEDS THE READER TO ACT.
 #
@@ -312,7 +359,12 @@ VALID_REACTIONS = frozenset(
 # whom — so the bridge does NOT append it. It only says loudly when it is
 # missing, because a marker written by the machine would say nothing and would
 # stop the assistant from thinking about the question.
-NEEDS_MARKER = ("ACTION NEEDED", "NO ACTION NEEDED")
+# English is ALWAYS accepted, in every language: the assistant on the other end
+# may answer in English even when the installation speaks something else, and a
+# marker rejected for being in the wrong language would be a marker missing.
+NEEDS_MARKER = tuple(dict.fromkeys(
+    [T("marker.action_needed"), T("marker.no_action_needed"),
+     "ACTION NEEDED", "NO ACTION NEEDED"]))
 MARKER_MIN_CHARS = 200   # short acknowledgements are exempt
 
 # --------------------------------------------------------------------------
@@ -324,26 +376,19 @@ MARKER_MIN_CHARS = 200   # short acknowledgements are exempt
 # this is entitled to assume that only messages addressed to the bot are kept.
 #
 # Edit the wording to name your own operator. Do not remove it.
-# WHAT PEOPLE ARE TOLD ON THE VERY FIRST MESSAGE. The text lists what is
-# ACTUALLY collected, not what once was. Since version 1.1.0 the bridge
-# downloads and stores ATTACHMENTS — pictures, documents, voice — while the
-# notice still spoke only of the conversation. A notice that lags behind the
-# program is worse than none: it reads as a promise.
+# WHAT PEOPLE ARE TOLD BY THE FIRST MESSAGE. The text lists what is ACTUALLY
+# collected, not what used to be. Since 1.1.0 the bridge downloads and keeps
+# ATTACHMENTS — images, documents, voice — while the notice still spoke only of
+# the conversation. A notice that has fallen behind the program is worse than no
+# notice at all: it reads as a promise.
+#
+# The wording lives in locale/<lang>.json, not here. This is the one text with
+# legal weight, and a translation of it must be reviewed by someone who reads
+# that language — which is only possible if it sits in a file a reader can open.
 def announce_text(chat_id: int) -> str:
-    signed = ("My replies are marked \"{name} AI({op}):\", so you can always "
-              "see who is speaking. ".format(name=BOT_NAME, op=OPERATOR)
+    signed = (T("notice.signed", name=BOT_NAME, op=OPERATOR)
               if policy(chat_id).get("reply_prefix", REPLY_PREFIX) else "")
-    return (
-        "I am {name}, an AI assistant on {op}'s side.\n\n"
-        "To address me, start your message with the word \"{name}\". {signed}\n\n"
-        "What you should know right away. THIS ENTIRE CONVERSATION IS WRITTEN "
-        "TO A FILE on {op}'s machine — not only what is addressed to me but "
-        "everything, because without the earlier context I answer poorly. "
-        "BESIDES THE TEXT, ATTACHMENTS ARE KEPT: pictures, documents and voice "
-        "notes you send are downloaded and sit on the same disk; voice is also "
-        "transcribed into text. None of this do I send outside this chat of my "
-        "own accord, and everything I say here is permitted by {op}."
-    ).format(name=BOT_NAME, op=OPERATOR, signed=signed)
+    return T("notice.body", name=BOT_NAME, op=OPERATOR, signed=signed)
 
 
 POLL_TIMEOUT = 50         # long poll, seconds
@@ -354,14 +399,14 @@ OUTBOX_SCAN = 1.0         # how often to look at the outbox, seconds
 # PATHS
 # --------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parent
-SELFCHECK_COUNT = ROOT / "selfcheck_count"   # counter of the principal's addresses
+SELFCHECK_COUNT = ROOT / "selfcheck_count"   # counts the principal's messages
 LOG = ROOT / "tg_log.jsonl"
-# The chat log grows without bound — the one thing nothing swept. Past
-# LOG_MAX_BYTES it moves to tg_log.jsonl.1 (a single backup) and writing starts
-# again. Voice transcripts are in the log anyway; losing the old is cheap, and a
-# full disk is not.
+# The chat log grows without limit — the one thing that was never swept. Past
+# LOG_MAX_BYTES it moves to tg_log.jsonl.1 (a single backup) and is started
+# again. Voice transcripts are in the log anyway; losing the old is no great
+# loss, the disk matters more.
 LOG_MAX_BYTES = int(_S.get("log_max_bytes", 50 * 1024 ** 2))
-REQUESTS = ROOT / "requests"            # AWAITING A REPLY — this is Logic's inbox
+REQUESTS = ROOT / "requests"            # AWAITING AN ANSWER — the assistant's inbox
 SERVED = ROOT / "served"                # answered, moved out of sight
 OUTBOX = ROOT / "outbox"
 SENT = ROOT / "sent"
@@ -370,66 +415,101 @@ SENT_REMINDERS = ROOT / "sent_reminders"
 REMINDER_SCAN = 20.0                    # how often to check the schedule, seconds
 MEDIA = ROOT / "media"                  # attachments, one directory per request
 
-# HOW MANY BYTES WE AGREE TO ACCEPT FROM SOMEONE ELSE'S MACHINE. Checked
-# against Telegram's metadata BEFORE downloading, so a large file costs one
-# call, not disk. Twenty megabytes is exactly getFile's ceiling in the Bot
-# API: asking for more means promising what the server will not give anyway.
+# A CORRESPONDENT'S MAIL FOLDER — THE WATCH LIVES IN THE BRIDGE, NOT IN THE
+# ASSISTANT'S SESSION. A watch inside the assistant dies with the session, and
+# worse: a process may survive from a PREVIOUS session while events no longer
+# reach the current one — from outside, "stalled" and "deaf" look the same
+# (measured 2026-08-24). The bridge is a systemd service; it outlives sessions,
+# so the guarantee must hang on it. The operator's word: look ONCE A MINUTE, not
+# once in ten — the check costs pennies.
+# THE PATHS LIVE IN settings.json (which is gitignored), NOT IN THE CODE. One
+# person's private wiring must not travel into a public repository along with
+# the bridge. With no mail_watch key the watch simply says nothing and the
+# bridge works exactly as before.
+#
+#   "mail_watch": {"inbox": "~/…/Inbox-Vitaly", "outbox": "~/…/Inbox-Arkadiy",
+#                  "mirror": "~/Exchange-mirror", "scan_seconds": 60}
+_MW = _S.get("mail_watch") or {}
+def _mw_path(key: str):
+    v = _MW.get(key)
+    return Path(v).expanduser() if v else None
+MAILWATCH_IN = _mw_path("inbox")        # the OTHER side writes here, we read
+MAILWATCH_OUT = _mw_path("outbox")      # WE write here, they read
+MAILWATCH_MIRROR = _mw_path("mirror")   # a copy outside the cloud folder and git
+MAILWATCH_SCAN = float(_MW.get("scan_seconds", 60.0))    # once a minute
+# BINDING A FOLDER TO A ROOM. A correspondent, 2026-09-01: events of ONE topic
+# falling into the shared room were breaking their working channel. An empty
+# list -> behave exactly as before.
+FOLDER_ROOMS = [r for r in (_MW.get("folder_rooms") or [])
+                if r.get("match") and r.get("chat_id")]
+MAILWATCH_STATE = ROOT / "mail_watch_seen.json"  # what was shown; do not call twice
+# THE NOTICE'S HEADING COMES FROM SETTINGS. Whose folder it is, is known to the
+# installation and not to the product: a correspondent's name in the code is one
+# person's private wiring inside a stranger's repository. With no key the
+# heading is generic and the bridge works exactly as before.
+MAILWATCH_LABEL = str(_MW.get("label") or T("mail.label"))
+
+# HOW MANY BYTES WE AGREE TO TAKE FROM SOMEONE ELSE'S MACHINE. Checked against
+# Telegram's metadata BEFORE downloading, so a large file costs one API call
+# rather than disk. Twenty megabytes is the Bot API's own getFile ceiling: to
+# ask for more is to promise what the server will not give anyway.
 MEDIA_MAX_BYTES = int(_S.get("media_max_bytes", 20 * 1024 * 1024))
 
-# HOW MUCH SPACE ATTACHMENTS GET IN TOTAL. Cleanup runs on OVERFLOW, not on
-# age — the operator's word 2026-08-22: a file sent half a year ago may be
-# needed, while forty of today's may not. Age does not know what matters; size
+# HOW MUCH ROOM ATTACHMENTS GET IN TOTAL. Cleaning happens on OVERFLOW, not by
+# age — the operator's word, 2026-08-22: a file sent six months ago may still be
+# needed while forty of today's are not. Age does not know what matters; volume
 # is at least honest.
 #
 # Two gigabytes, and here is where the number comes from. The per-file ceiling
-# is twenty megabytes, so a hundred of the largest attachments or, at the
-# current snapshot size of about a hundred and twenty kilobytes, on the order
-# of seventeen thousand pictures. Ordinary use will never hit this; a sender
-# who overreaches hits it fast and does not eat the disk. Against the free
-# space it is a fraction of a percent.
+# is twenty megabytes, so a hundred of the largest attachments — or, at a
+# typical screenshot of about a hundred and twenty kilobytes, some seventeen
+# thousand images. Ordinary use will never reach it; a runaway sender reaches it
+# quickly and eats no disk. Against the free space this is a fraction of a
+# percent.
 MEDIA_BUDGET_BYTES = int(_S.get("media_budget_bytes", 2 * 1024 ** 3))
 
-# THE LOG OF RULES FOR SENDING FILES.
+# THE RULE BOOK FOR SENDING FILES.
 #
-# The operator's word 2026-08-22: "files are not just little letters anymore,
-# you have to guard against a fool... but I would not want full determinism.
-# Confirming every single time is a pain. It should go by a log of rules
-# somehow: a familiar class — send it; something new — ask; already agreed —
-# don't ask at all."
+# The operator's word, 2026-08-22: "files are not letters any more, there has to
+# be protection against a fool… but I would not want full determinism. A
+# confirmation every single time is a pain. It should go by a book of rules: for
+# this project just send, ask about something new, and about what was agreed
+# earlier and is ready in the folder do not ask at all."
 #
-# Hence the design: confirmation moves FROM THE INSTANCE TO THE RULE. A CLASS
-# of sends is approved once — this folder into this room — and after that
-# everything that falls into the class goes without a question. Everything that
-# does not is asked about.
+# Hence the design: the confirmation moves FROM THE INSTANCE TO THE RULE. A
+# CLASS of sends is approved once — this folder into this room — and from then
+# on everything inside the class goes without a question. Everything outside it
+# is asked about.
 #
-# A rule CANNOT come from me. It is written here only by the bridge and only on
-# the operator's mark, together with his numeric id, the mark itself and the
-# proposal number. A rule without these fields is not a rule but a forgery. The
-# same prohibition as in institutional clearances: the constrained party does
-# not manufacture the object that constrains it.
-NEEDS_CONSENT = ROOT / "needs_consent"   # files awaiting a separate decision
+# A RULE CANNOT COME FROM ME. It is written here only by the bridge and only on
+# the operator's mark, together with their numeric id, the mark itself and the
+# proposal's number. A rule without those fields is not a rule but a forgery.
+# This is the same prohibition stated for warrants elsewhere: the constrained
+# party does not manufacture the object that constrains it.
+NEEDS_CONSENT = ROOT / "needs_consent"   # files awaiting a decision of their own
 
 # AN UNKNOWN CHAT LEAVES A TRACE, NOT SILENCE. A message from a chat outside the
-# allow-list used to be dropped, leaving ONE line in bridge.out and nothing else.
-# That is indistinguishable from the world being silent: an empty folder looks
-# exactly like "nobody wrote", and the operator has no way to tell the two apart
-# — so a bot that IS in a group can be reported as absent from it.
-# Now the refusal LEAVES A FILE — one per chat, carrying everything needed to
-# admit it. Same principle already written down for outbox: drop the
-# unrecognised WITH A REASON, never into silence.
+# allow list used to be discarded, leaving ONE line in the log and nothing else.
+# That is not enough: an absence of files is indistinguishable from the message
+# never having existed, and from an empty folder one cannot tell whether the
+# sender is silent or the instrument is. A diagnosis from such a "zero" comes
+# out confident and wrong.
+# Now a refusal LEAVES A FILE — one per chat, with everything needed to admit
+# it. The same principle the BACKLOG states for the outbox: drop what you do not
+# recognise WITH A REASON, not into silence.
 NEEDS_WHITELIST = ROOT / "needs_whitelist"
 
 RULES = ROOT / "rules.json"
-GRANTS = ROOT / "grants.json"            # ONE-TIME permissions for specific files
+GRANTS = ROOT / "grants.json"            # ONE-OFF grants for particular files
 
 
 def grants() -> list:
-    """One-time permissions. A rule is for a stream, a permission for a case.
+    """One-off grants. A rule is for a stream, a grant is for one occasion.
 
-    Kept apart from rules DELIBERATELY. A rule describes a CLASS and holds
-    going forward; a permission is named by fingerprint, spent once and means
-    nothing afterwards. Putting them in one file would mean, a month later, not
-    telling "I allowed files like this" from "I allowed THIS file".
+    They live apart from rules DELIBERATELY. A rule describes a CLASS and holds
+    from now on; a grant is named by a digest, is spent once and afterwards
+    means nothing. Putting both in one file means that in a month you cannot
+    tell "I allowed files like this" from "I allowed THIS file".
     """
     try:
         data = json.loads(GRANTS.read_text(encoding="utf-8"))
@@ -438,37 +518,38 @@ def grants() -> list:
         return []
 
 
-# HOW MANY FILES MAY HANG UNDER ONE MARK. Ten is not a round number for looks:
-# a longer list stops being read by eye, and a mark under an unread list is a
-# rubber stamp, whatever you call it. It is written in the bridge itself from
-# day one: "a mark under a list of five tasks becomes a rubber stamp within a
-# week." The answer to "many files" is not a bigger batch but a RULE on the
-# folder.
+# HOW MANY FILES MAY HANG UNDER ONE MARK. Ten is not a round number chosen for
+# looks: past that length people stop reading the list with their eyes, and a
+# mark under an unread list is a rubber stamp whatever it is called. The bridge
+# has said so since day one: "a mark under a list of five items becomes a stamp
+# within a week." The answer to "many files" is not a bigger batch but a RULE on
+# the folder.
 BATCH_MAX = int(_S.get("batch_max", 10))
 
-# AFTER HOW MANY MINUTES TO SAY THAT NOBODY TOOK IT UP. Twenty: less and the
-# bridge speaks across the assistant that is merely thinking; more and the
-# person has already decided they were forgotten. Counted from the write into
-# the inbox, not from sending.
+# AFTER HOW MANY MINUTES TO SAY THAT NOBODY PICKED IT UP. Twenty: less, and the
+# bridge talks over an assistant that is merely thinking; more, and the person
+# has already decided they were forgotten. Counted from the write into the
+# inbox, not from the send.
 NUDGE_AFTER_MIN = int(_S.get("nudge_after_min", 20))
-# After how many minutes the bridge shows the ASSISTANT its still-open eyes as a
-# list. The eye is the indicator of "not done"; it may be taken off only by a
-# real answer. The bridge does not take it off — it merely puts the list under
-# the assistant's nose rather than relying on memory.
+# After how many minutes a lingering open eye is shown to the ASSISTANT as a
+# list (the operator's design: the eye is a "not done" indicator and may only be
+# put out by a real answer; the bridge merely holds the list under its nose
+# instead of relying on memory).
 EYES_AFTER_MIN = int(_S.get("eyes_after_min", 3))
-# Flood control, the against-foolishness kind. A sender who sends more than
-# FLOOD_N messages within FLOOD_T seconds is muted for FLOOD_K minutes: their
-# messages are logged but not taken into work, and they get ONE notice.
-# EVERYONE is counted, the principal included — a compromised principal account
-# is exactly where a flood would come from, so an exemption there is the hole.
+# Anti-flood, of the "against a fool" kind. A sender who sends more than FLOOD_N
+# messages within FLOOD_T seconds is muted for FLOOD_K minutes: their messages
+# are logged but not acted upon, and they get ONE notification. EVERYONE is
+# muted, the principal included — a compromised principal account must not be
+# the exception (that would be the hole itself). The operator's word,
+# 2026-08-23.
 FLOOD_N = int(_S.get("flood_n", 10))
 FLOOD_T = int(_S.get("flood_t", 20))
 FLOOD_K = int(_S.get("flood_k", 5))
 
 
 def file_rules() -> list:
-    """Rules for sending files. An empty list if there is no log — that is,
-    by default NOTHING IS ALLOWED, and everything is asked about."""
+    """File-sending rules. An empty list when there is no book — that is, by
+    default NOTHING is allowed and everything is asked about."""
     try:
         data = json.loads(RULES.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
@@ -497,6 +578,89 @@ PROPOSAL_SCAN = 300.0     # how often to clear expired proposals, seconds
 # itself is never touched — it is the record. This is only the bulky residue.
 KEEP_DAYS = int(_S.get("keep_days", 30))
 
+# Service wake-up requests in requests/ (reaction-/control-/verdict-/pending-
+# eyes-) are signals that live exactly once: pending_eyes and nudge already skip
+# them, they create no false eyes — but they never leave either, and requests/
+# swells. Past this age they are moved into served/. needsfile- is NOT swept: it
+# is a file awaiting the operator's consent, a genuinely open request.
+SERVICE_REQUEST_KEEP_HOURS = int(_S.get("service_request_keep_hours", 6))
+
+# --------------------------------------------------------------------------
+# EXTERNAL HANDLERS — the product's extension point
+# --------------------------------------------------------------------------
+# The bridge ships no features of its operator's own. Anything specific to one
+# installation — a private search index, a company tool, a home automation — is
+# an EXTERNAL PROGRAM declared here, and the bridge knows nothing about it
+# beyond "a command maps to a process". Delete the bridge, install it again,
+# put settings.json back, and the command works: nothing of yours ever lived
+# in the product's source.
+#
+#   "handlers": [
+#     {"command": "/ac", "run": ["python3", "~/tools/store.py"],
+#      "help": "search my notes", "where": "principal_private",
+#      "timeout_seconds": 180}
+#   ]
+#
+# "pattern" is optional and wins over "command" when a family of commands must
+# be caught at once (e.g. "^/f([1-9])$"); its groups reach the program.
+#
+# WHERE IS DEFAULT-DENY. Without an explicit "where" a handler runs ONLY in the
+# principal's private chat. An extension usually reaches private material, and a
+# group is exactly where one wrong word publishes it to third parties. Opening
+# it up must be a decision someone typed, never a default they inherited.
+import re as _re
+_HANDLER_WHERE = ("principal_private", "anywhere")
+HANDLERS = []
+for _h in (_S.get("handlers") or []):
+    _cmd, _run = _h.get("command"), _h.get("run")
+    if not _run or not (_cmd or _h.get("pattern")):
+        print(f"WARNING: handler without command/pattern or without run, skipped: {_h!r}")
+        continue
+    _where = _h.get("where", "principal_private")
+    if _where not in _HANDLER_WHERE:
+        print(f"WARNING: handler {_cmd!r}: unknown where={_where!r}, "
+              f"using principal_private")
+        _where = "principal_private"
+    _pat = _h.get("pattern") or (r"^\s*" + _re.escape(_cmd) + r"(?:[\s:]+(?P<arg>.+))?\s*$")
+    try:
+        _rx = _re.compile(_pat, _re.I | _re.U | _re.S)
+    except _re.error as _e:
+        print(f"WARNING: handler {_cmd!r}: broken pattern ({_e}), skipped")
+        continue
+    HANDLERS.append({
+        "command": _cmd or _h.get("pattern"),
+        "re": _rx,
+        "run": [str(Path(_a).expanduser()) if "/" in str(_a) else str(_a) for _a in _run],
+        "where": _where,
+        "help": _h.get("help", ""),
+        "timeout": float(_h.get("timeout_seconds", 60)),
+    })
+
 VOICE = ROOT / "voice"            # downloaded audio, kept next to its transcript
 ANNOUNCED = ROOT / ".announced"   # which chats have been told
 OFFSET = ROOT / ".offset"         # which update has already been handled
+
+
+# --------------------------------------------------------------------------
+# THE BRIDGE CREATES ITS OWN DIRECTORIES
+# --------------------------------------------------------------------------
+# Measured 2026-09-10 on a CLEAN install: requests/ does not exist and the
+# bridge dies with FileNotFoundError on the VERY FIRST incoming message. Here
+# the directories existed — someone made them by hand long ago — and from inside
+# one's own installation this trouble is invisible: the person who installs the
+# product is not the person who developed it. Exactly the argument by which the
+# machine-path guard lives in this package.
+#
+# Why here and not in setup.py: EVERY entry point imports config — the bridge,
+# pending, propose, react. A directory made by the installer does not help
+# someone who ran a tool from a copy. mkdir(exist_ok=True) costs microseconds
+# once per start. Files (LOG, OFFSET, ANNOUNCED, MAILWATCH_STATE) are left
+# alone: they are created by whoever writes them, and an empty one here would be
+# a lie that something had already happened.
+for _d in (REQUESTS, SERVED, OUTBOX, SENT, REMINDERS, SENT_REMINDERS, MEDIA,
+           NEEDS_CONSENT, NEEDS_WHITELIST, PROPOSALS, DECIDED, VOICE):
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except OSError as _e:                    # read-only mount, foreign volume: not ours
+        print(f"WARNING: could not create {_d}: {_e}")
+del _d

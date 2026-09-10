@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -42,6 +43,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import config as C
+
+# One phrase for the reader, in the installation's language. Bound here so
+# every call site reads T("key") and not C.T("key") — the shorter the call,
+# the likelier the next author reaches for it instead of a bare sentence.
+T = C.T
 
 API = "https://api.telegram.org/bot{}/{}"
 # ONE RULE: the name stands AT THE START of the message and nowhere else.
@@ -76,9 +82,79 @@ API = "https://api.telegram.org/bot{}/{}"
 # tell. That one is discarded by the assistant, silently.
 _ADDRESS_RE = re.compile(
     r"^\s*(?:" + "|".join(re.escape(t) for t in sorted(C.TRIGGERS, key=len, reverse=True))
-    + r")(?![\w-])",
+    # A HYPHEN AFTER THE NAME IS A DASH, NOT A COMPOUND WORD. It used to be
+    # `(?![\w-])`: the hyphen was excluded entirely so that "logic-programmer"
+    # would not count as a call. The cost showed on 2026-08-27: a correspondent
+    # writes "Logic- for <principal>", the bridge was SILENTLY not called, and
+    # their letters never reached the assistant. The operator's rule: "if what
+    # follows the name is not a letter, it is addressed to me." So now only a
+    # hyphen followed by a WORD (a compound) is excluded, while a dash with a
+    # space or at the end of a line lets the call through.
+    + r")(?!\w)(?!-\w)",
     re.IGNORECASE | re.UNICODE,
 )
+
+
+
+# ─── A TYPO IN THE NAME IS ALSO A CALL ──────────────────────────────────────
+# The operator's word, 2026-08-28: "in a group people get your name wrong when
+# calling you; make typos not count against them — better one call too many than
+# silence about something important."
+#
+# MEASURED ON THE LIVE CONVERSATION, 1379 messages: the exact rule missed TWO
+# calls, both from a correspondent, both spelling the name with two letters
+# swapped. The second, at 2026-08-27 20:40, carried the word URGENT: "<principal>
+# — look urgently at the new file in the inbox… it seems we have missed an
+# important layer." The bridge threw it away in silence.
+#
+# WE TAKE THE LARGER MARGIN, and here is why. That misspelling is TWO edits away
+# from the name (one letter swap counted twice). A threshold of 1 catches it only
+# because a hand-written variant already sits in the trigger list — that is, it
+# rests on someone having ALREADY guessed this particular typo. On a typo nobody
+# foresaw, a threshold of 1 stays silent. Hence: 1 for triggers up to 4
+# characters, 2 for longer ones. Measured on the same corpus: both thresholds
+# give THE SAME two catches and ZERO false positives, so the larger margin costs
+# exactly nothing here.
+#
+# ONLY the first word is matched, and only from 4 characters up: a short word is
+# too close to everything. The exact rule is checked FIRST and left untouched —
+# it is still the fast path, and the fuzzy one merely picks up its misses.
+def _lev(a: str, b: str) -> int:
+    """Levenshtein distance. An early exit on length: nothing to compute."""
+    if abs(len(a) - len(b)) > 2:
+        return 99
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+_FIRST_WORD = re.compile(r"^\s*([^\s,.;:!?()\-–—]+)")
+
+
+def fuzzy_address(text: str) -> int | None:
+    """The position AFTER the name when the first word is the name misspelled;
+    otherwise None."""
+    m = _FIRST_WORD.match(text or "")
+    if not m:
+        return None
+    word = m.group(1)
+    if len(word) < 4:
+        return None
+    low = word.lower()
+    for trig in C.TRIGGERS:
+        g = trig.lower()
+        # A MARGIN OF 2 only when BOTH the word and the name are five letters
+        # or longer. A four-letter word two edits from a five-letter name is more
+        # often ANOTHER WORD than a typo: "Loki" was caught as "logic" that way.
+        # Measured when this was written.
+        limit = 2 if (len(g) >= 5 and len(low) >= 5) else 1
+        if _lev(low, g) <= limit:
+            return m.end(1)
+    return None
 
 
 def call(method: str, _timeout: float = 20.0, _retry: bool = False,
@@ -134,11 +210,12 @@ def now() -> str:
 
 
 def log_line(rec: dict[str, Any]) -> None:
-    # ONE LOCK ON THE LOG (_LOG_LOCK, declared next to _WHISPER_LOCK). log_line
-    # is called from the main loop AND the voice/file worker threads. O_APPEND
-    # makes each write() syscall atomic, but one long line (a big context or a
-    # transcript) splits into several write()s and can interleave with another
-    # thread's line — a corrupt JSONL line that readers silently skip.
+    # ONE LOCK FOR THE LOG (_LOG_LOCK, declared next to _WHISPER_LOCK).
+    # log_line is called both by the main loop and by the voice/file threads.
+    # O_APPEND makes each write() syscall atomic, but a long line (a large
+    # context or a transcript) is split across several write() calls and can
+    # interleave with another thread's line — broken JSONL, which readers skip
+    # in silence.
     line = json.dumps(rec, ensure_ascii=False) + "\n"
     with _LOG_LOCK:
         with C.LOG.open("a", encoding="utf-8") as f:
@@ -146,13 +223,13 @@ def log_line(rec: dict[str, Any]) -> None:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    """Write via a temp file + os.replace, so a reader sees either the old file
-    whole or the new file whole, but NEVER a half-written one.
+    """Write via a temporary file + os.replace: a reader sees either the whole
+    old file or the whole new one, but NEVER half a file.
 
     grants.json/rules.json are written from the pump and read from the pump too
-    (rule_for/grant_for in flush_outbox) and from the main thread. A plain
-    write_text is truncate then write; a reader landing mid-write got broken
-    JSON. os.replace is atomic on one filesystem.
+    (rule_for/grant_for in flush_outbox) as well as from the main thread. A plain
+    write_text is truncate-then-write; a reader arriving in the middle got broken
+    JSON. os.replace within one filesystem is atomic.
     """
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
@@ -160,14 +237,14 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def announce(chat_id: int) -> None:
-    """Notice that this chat is logged — once per chat, BEFORE anything from it
-    lands on disk.
+    """The recording notice — once per chat, BEFORE anything from it reaches
+    the disk.
 
-    THE KEY IS NOT THE ROOM, IT IS THE ROOM PLUS A FINGERPRINT OF THE TEXT. The
-    first version remembered only the chat id, so a changed notice would never
-    reach those already told: the program collects more, but people know it by
-    the old wording. A fingerprint in the key means that widening the collection
-    raises a fresh notice by itself.
+    THE KEY IS NOT THE ROOM BUT THE ROOM PLUS A DIGEST OF THE TEXT. The first
+    version remembered only the chat id, so a changed notice would never have
+    reached those who had already been told something: the program collects
+    more, while people know the old wording. A digest in the key means that
+    widening what is collected raises a new notice by itself.
     """
     text = C.announce_text(chat_id)
     key = f"{chat_id}:{hashlib.sha256(text.encode()).hexdigest()[:12]}"
@@ -188,6 +265,12 @@ def tail(chat_id: int, n: int) -> list[dict[str, Any]]:
     A bare mention is undecidable on its own: "shall we ask Logic?" may be an
     address or talk about it. The preceding lines usually settle the question.
     """
+    # EVERY CONTEXT LINE CARRIES WHOSE VOICE IT IS. It used to carry only a name
+    # and the text — and in Telegram a person picks their own name. An outsider
+    # calling themselves "<principal>" wrote "yes, I allow it", and in the
+    # context that sat INDISTINGUISHABLE from the principal's own words. The gate
+    # did not break on this (it compares ids), but suggestion through the context
+    # worked. Found by an audit on 2026-08-25.
     if not C.LOG.exists():
         return []
     # READ THE TAIL, NOT THE FILE. read_text() pulls the whole log into memory
@@ -209,7 +292,7 @@ def tail(chat_id: int, n: int) -> list[dict[str, Any]]:
         except Exception:
             continue
         if r.get("chat_id") == chat_id:
-            out.append({"from": r.get("from"), "text": r.get("text")})
+            out.append({"from": r.get("from"), "from_id": r.get("from_id"), "principal": bool(r.get("from_id") is not None and r.get("from_id") == C.policy(r.get("chat_id"))["principal"]), "text": r.get("text")})
     return out[-n:]
 
 
@@ -265,7 +348,6 @@ def ack(chat_id: int, message_id: int, emoji: str | None = None) -> str:
 # one of its own messages: replying IS addressing, and demanding the name on
 # top of it would be pedantry the sender will not forgive twice.
 _ME = [0]
-_ME_NAME = [""]
 
 # Unknown chats already reported, so one stray group does not fill the log.
 _SEEN_UNKNOWN: set[int] = set()
@@ -273,40 +355,43 @@ _SEEN_UNKNOWN: set[int] = set()
 
 _WHISPER_LOCK = threading.Lock()
 _WHISPER = [None]
-# Serialises appends to the chat log from the main loop and worker threads.
+# Serialises appends to tg_log.jsonl from the main loop and the job threads
+# (see log_line).
 _LOG_LOCK = threading.Lock()
-# ONE LOCK ON THE STATE JOURNALS. grants.json and rules.json are read-modify-
-# written from TWO threads: the main loop (_close via decide) and the pump
-# (spend_grant, and sweep_proposals->_close). Without a shared lock two threads
-# read one list, each appends its own change and writes over the other — a lost
-# update. Worst case: spend_grant sets used_at and _close overwrites the list
-# without it, so one-time consent RESURRECTS. RLock: _close nests under it.
+# ONE LOCK FOR THE STATE BOOKS. grants.json and rules.json are edited
+# read-modify-write from TWO threads: the main one (_close via decide) and the
+# pump (spend_grant, and sweep_proposals->_close). Without a shared lock two
+# threads read the same list, each appends its own entry and writes over the
+# other — an edit is lost. Worst case: spend_grant sets used_at while _close
+# overwrites the list without it → a one-off consent COMES BACK TO LIFE. An
+# RLock, because _close may call nested operations under the same lock.
 _STATE_LOCK = threading.RLock()
 
 
 def rule_for(chat_id: int, path: Path,
              rules: list | None = None) -> dict[str, Any] | None:
-    """Which standing rule covers sending THIS file to THIS room.
+    """Which standing rule, if any, covers sending THIS file into THIS room.
 
-    By default it covers nothing: an empty journal means "ask about everything".
-    A permission is only ADDED by an explicit record and is never inferred.
+    By default nothing is covered: an empty book means "ask about everything".
+    Permission is only ADDED by an explicit entry and is never inferred.
 
-    TWO LEVELS OF SUBJECT, by the curator's word ("we named specific ones, and
-    only then is it allowed, all by full path; and folders the same way"):
+    TWO LEVELS OF SUBJECT, by the operator's word ("we agreed on specific ones,
+    and only then is it allowed, everything by full path; and folders likewise"):
 
-        paths  exact full paths — THIS file and no other is allowed
+        paths  exact full paths — THIS file is allowed and no other
         dirs   a whole folder, with a name pattern inside it
 
-    An exact path is stricter and therefore comes first: where specific files
-    are listed, a new file in the same folder is NOT allowed until it is named.
+    The exact path is the stricter one and therefore comes first: where
+    particular files are listed, a new file in the same folder is NOT allowed
+    until it has been named.
 
-    ROOMS ARE ENUMERATED. A rule may name several, but cannot say "any": there
-    is no such field. A room nobody thought of will never fall into a rule — not
-    by vigilance, but by the shape of the format.
+    ROOMS ARE ENUMERATED. A rule may name several but cannot say "any": there is
+    no such field. A room nobody thought about will never fall under a rule — not
+    through vigilance but by the shape of the format.
 
-    `project` is a LABEL for a human reading the journal. It is NEVER checked: a
-    label can slip, a path cannot. Checking by the label would mean it is enough
-    to call someone else's folder by the right word.
+    `project` is a LABEL for a human reading the book. It is NEVER checked: a
+    label can drift, a path cannot. Checking by label would mean that calling
+    someone else's folder by the right word is enough.
     """
     rules = C.file_rules() if rules is None else rules
     try:
@@ -319,10 +404,11 @@ def rule_for(chat_id: int, path: Path,
         rooms = r.get("chats") or ([r["chat_id"]] if r.get("chat_id") else [])
         if chat_id not in rooms:
             continue
-        # A rule must carry the id of a REAL approver, not just a nonempty field.
-        # The principal places a mark, the bridge writes their id; a record with
-        # an arbitrary nonzero id (a corrupted file, a hand-edit) used to pass —
-        # now the id must be an approver of at least one chat.
+        # A rule must carry the id of a REAL approver, not merely a non-empty
+        # field. The operator sets a mark and the bridge writes their number
+        # down; an entry with an arbitrary non-zero id (a corrupted file, a hand
+        # edit) used to pass — now the id must be an approver of at least one
+        # chat.
         if r.get("added_by_user_id") not in approver_ids:
             print(f"[{now()}] RULE NOT FROM AN APPROVER, skipped: {r.get('id')} "
                   f"(added_by={r.get('added_by_user_id')})")
@@ -331,17 +417,18 @@ def rule_for(chat_id: int, path: Path,
         if exp:
             try:
                 dt = datetime.fromisoformat(exp)
-                # A NAIVE DATE MUST NOT CRASH THE WHOLE SEND LOOP. A tz-less
-                # expiry (`--until 2026-12-01T00:00:00`) compared with aware
-                # nowts raises TypeError — not ValueError, which was the only
-                # one caught — and the exception left flush_outbox, aborting
-                # EVERY send each pass. Normalise to UTC.
+                # A NAIVE DATE MUST NOT BRING DOWN THE WHOLE DELIVERY. A
+                # deadline without a timezone (`--until 2026-12-01T00:00:00`) is
+                # compared with an aware nowts and raises TypeError — which is
+                # not ValueError, and only the latter was caught, so the
+                # exception escaped flush_outbox and cut off EVERY send on every
+                # pass. We normalise to UTC, as due_reminders does.
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 if dt <= nowts:
                     continue
             except (ValueError, TypeError):
-                continue        # unreadable expiry — NOT in favour of sending
+                continue        # an unreadable deadline does NOT favour sending
 
         for pth in (r.get("paths") or []):
             try:
@@ -351,7 +438,7 @@ def rule_for(chat_id: int, path: Path,
                 continue
 
         dirs = r.get("dirs")
-        if dirs is None and r.get("dir"):      # v1.4 form, still supported
+        if dirs is None and r.get("dir"):      # the v1.4 shape, still supported
             dirs = [{"dir": r["dir"], "glob": r.get("glob")}]
         for d in (dirs or []):
             base_s = d.get("dir") if isinstance(d, dict) else d
@@ -370,12 +457,12 @@ def rule_for(chat_id: int, path: Path,
 
 
 def grant_for(chat_id: int, path: Path) -> dict[str, Any] | None:
-    """A one-time permission for THIS file in THIS room, not yet spent.
+    """A one-off grant for THIS file into THIS room, not yet spent.
 
-    Bound by FINGERPRINT, not by name: what was approved is what the human saw
-    in the proposal. Swap the contents after the mark and the fingerprint no
-    longer matches, so the permission does not fire. The name is here for
-    reading, the fingerprint for acting.
+    Bound by DIGEST, not by name: what was approved is what the person saw in the
+    proposal. Swap the contents after the mark and the digest no longer matches,
+    so the grant does not fire. The name here is for reading, the digest is for
+    deciding.
     """
     try:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -385,9 +472,9 @@ def grant_for(chat_id: int, path: Path) -> dict[str, Any] | None:
     for g in C.grants():
         if g.get("used_at"):
             continue
-        # Like a rule: the id must be a REAL approver, not merely nonempty.
+        # As with a rule: the id must be a REAL approver, not merely non-empty.
         if g.get("added_by_user_id") not in approver_ids:
-            print(f"[{now()}] PERMISSION NOT FROM AN APPROVER, skipped: {g.get('id')} "
+            print(f"[{now()}] GRANT NOT FROM AN APPROVER, skipped: {g.get('id')} "
                   f"(added_by={g.get('added_by_user_id')})")
             continue
         if g.get("chat_id") == chat_id and g.get("sha256") == digest:
@@ -396,11 +483,12 @@ def grant_for(chat_id: int, path: Path) -> dict[str, Any] | None:
 
 
 def spend_grant(gid: str) -> None:
-    """Spend a permission. One-time means one-time.
+    """Spend a grant. One-off means one-off.
 
-    Under _STATE_LOCK and atomic: otherwise a concurrent _close (main thread)
-    appending a new grant would overwrite this used_at, and one-time consent
-    would resurrect — the file could be sent again without a fresh yes.
+    Under _STATE_LOCK and atomically: otherwise a concurrent _close (main
+    thread) appending a new grant would overwrite this used_at, and the one-off
+    consent would come back to life — the file could go out a second time
+    without a new "yes".
     """
     with _STATE_LOCK:
         gs = C.grants()
@@ -413,24 +501,25 @@ def spend_grant(gid: str) -> None:
 
 def send_file(chat_id: int, path: Path, caption: str = "",
               as_photo: bool = False) -> dict[str, Any]:
-    """Send a file to a chat. Our own multipart assembly, no third-party libraries.
+    """Send a file to a chat. Multipart assembled by hand, no third-party
+    libraries.
 
     WHY A SEPARATE FUNCTION AND NOT A PARAMETER TO `call`. An ordinary call
-    encodes the fields as urlencoded; a file cannot be sent that way. This is
-    not "one more method", it is a different way of talking to the same API, and
-    mixing them into one function means hiding a difference that will bite
-    someone later.
+    encodes its fields as urlencoded; a file cannot travel that way. This is not
+    "one more method", it is a different way of talking to the same API, and
+    mixing the two inside one function would hide a difference that bites
+    somebody later.
 
-    The caption is trimmed to 1024 characters — as much as the Bot API allows.
-    We trim it IN ADVANCE and say so, or the server refuses the whole thing and
-    the file never leaves over one extra line of text.
+    The caption is cut to 1024 characters — that is what the Bot API allows. We
+    cut it IN ADVANCE and say so, otherwise the server refuses the whole request
+    and the file does not go out because of one extra line of text.
     """
     if not path.exists():
         return {"ok": False, "description": f"no such file: {path}"}
     method = "sendPhoto" if as_photo else "sendDocument"
     field = "photo" if as_photo else "document"
     if len(caption) > 1024:
-        print(f"[{now()}] caption {len(caption)} > 1024, trimmed")
+        print(f"[{now()}] caption {len(caption)} > 1024, cut")
         caption = caption[:1021] + "..."
 
     boundary = "----LogicBridge" + hashlib.sha256(
@@ -446,9 +535,9 @@ def send_file(chat_id: int, path: Path, caption: str = "",
     if caption:
         field_part("caption", caption)
     # THE FILE NAME GOES INTO A HEADER, SO IT MUST BE SANITISED. A quote or a
-    # newline in the name is not cosmetic: the header closes early, and anything
-    # can be appended past it. The file name comes from an allowed folder, but
-    # whoever drops files there is the one who chooses their names.
+    # newline in the name is not cosmetic: the header closes early and anything
+    # can be appended after it. The name comes from an allowed folder — but
+    # whoever puts files there is who chooses their names.
     safe = path.name.replace('"', "'").replace("\r", " ").replace("\n", " ")
     parts.append(f"--{boundary}\r\n".encode())
     parts.append((f'Content-Disposition: form-data; name="{field}"; '
@@ -472,16 +561,17 @@ def fetch_file(file_id: str, dest: Path, max_bytes: int | None = None) -> bool:
     """Download a file the bot was sent. Separate from call(): the file API
     lives on a different host and returns bytes, not JSON.
 
-    THE CAP IS CHECKED HERE, NOT ONLY AT THE CALLER. The first version looked
-    at `file_size` from the update and read the whole response with a single
-    `read()`. Two holes in one line: the `file_size` field may be ABSENT from
-    the update altogether — then the check silently did nothing — and an
-    unbounded `read()` reads as much as it is given. The promise of "twenty
-    megabytes" rested on the sender's honesty.
+    THE CEILING IS ENFORCED HERE, NOT ONLY AT THE CALLER. The first version
+    looked at `file_size` from the update and read the response whole with a
+    single `read()`. Two holes in one line: the `file_size` field may be ABSENT
+    from the update altogether — and then the check silently did nothing — while
+    an unbounded `read()` takes as much as it is given. The promise of "twenty
+    megabytes" rested on trust
+    in the sender.
 
-    Now: we ask the API itself for the size, read IN CHUNKS and break off on
-    overrun, and delete a partial download — half a file is worse than nothing,
-    because it looks like a file.
+    Now: we ask the API itself for the size, read in CHUNKS and abort on
+    overflow, deleting what was partly downloaded — half a file is worse than
+    nothing, because it looks like a file.
     """
     cap = C.MEDIA_MAX_BYTES if max_bytes is None else max_bytes
     r = call("getFile", file_id=file_id)
@@ -492,7 +582,7 @@ def fetch_file(file_id: str, dest: Path, max_bytes: int | None = None) -> bool:
         return False
     told = res.get("file_size")
     if told and told > cap:
-        print(f"[{now()}] refused by size: the API says {told} > {cap}")
+        print(f"[{now()}] refused on size: the API says {told} > {cap}")
         return False
     url = f"https://api.telegram.org/file/bot{C.TOKEN}/{path}"
     try:
@@ -507,8 +597,8 @@ def fetch_file(file_id: str, dest: Path, max_bytes: int | None = None) -> bool:
                 if got > cap:
                     out.close()
                     dest.unlink(missing_ok=True)
-                    print(f"[{now()}] BROKEN OFF: the stream exceeded {cap} bytes "
-                          f"(the API promised {told}) — partial download deleted")
+                    print(f"[{now()}] ABORTED: the stream exceeded {cap} bytes "
+                          f"(the API promised {told}) — the partial file is deleted")
                     return False
                 out.write(chunk)
         return True
@@ -581,12 +671,13 @@ def whisper_ready() -> str:
 
 
 def _guarded(fn, *args) -> None:
-    """Run a worker-thread body so a crash SHOUTS instead of dying in silence.
+    """Run a job-thread body so a crash SHOUTS instead of dying in silence.
 
     voice_job/file_job run in daemon threads off the polling loop. A daemon
     thread that raises just disappears — the message it was carrying is lost
     with no trace, and the sender is left on 🤔 forever. This wrapper catches
-    everything and prints a full traceback, so a silent loss becomes a loud one.
+    everything, prints a full traceback, and leaves a mark that a message was
+    dropped, so a silent loss becomes a loud one.
     """
     try:
         fn(*args)
@@ -614,21 +705,19 @@ def voice_job(chat_id: int, msg: dict[str, Any], rec: dict[str, Any],
           f"{time.monotonic() - t0:.1f}s to place {C.HEARD_EMOJI}")
     dest = C.VOICE / f"{msg['message_id']}-{chat_id}.ogg"
     if not fetch_file(media["file_id"], dest):
-        # NOT SILENTLY. A failed download used to be a bare return: no log
-        # line, no word to the sender — they saw 🤔 and then forever silence.
-        # That is exactly the "stored-but-not" class. Say the same thing as a
-        # failed transcription: the audio did not arrive, please send it again.
+        # NOT IN SILENCE. A failed download used to be a bare return: no line in
+        # the log, no word to the sender — who saw 🤔 and then nothing, for ever.
+        # That is exactly the "accepted but lost" class. We say the same thing as
+        # for a failed transcription: the audio did not arrive, send it again.
         rec["text"] = ""
         rec["voice_download_failed"] = True
         log_line(rec)
         C.OUTBOX.joinpath(f"novoice-{msg['message_id']}-{chat_id}.json").write_text(
             json.dumps({"chat_id": chat_id, "reply_to": msg["message_id"],
-                        "text": "I received your voice message but could not "
-                                "download it (a network glitch or the file was "
-                                "unavailable). Please send it again."},
+                        "text": T("voice.not_downloaded")},
                        ensure_ascii=False), encoding="utf-8")
         print(f"[{now()}] voice: download FAILED {msg['message_id']}/{chat_id} "
-              f"— sender told, no request created")
+              f"— the sender was told, no request was made")
         return
     text = transcribe(dest)
     rec["voice"] = str(dest)
@@ -659,148 +748,6 @@ def voice_job(chat_id: int, msg: dict[str, Any], rec: dict[str, Any],
     accept(chat_id, msg, rec, text, msg.get("from", {}) or {}, voice=True)
 
 
-# A COMMAND ADDRESSED TO ANOTHER BOT IS NOT FOR US. Telegram lets a sender aim
-# at one bot among several: `/command@BotName`. In a room with all_addressed,
-# without this rule EVERY command meant for another bot becomes a request and
-# wakes the assistant.
-# A command with no suffix (`/plain_command`) is NOT taken away: in a group with
-# several bots an unsuffixed command is addressed to all of them, and deciding
-# for the sender who they meant is not ours to do.
-_CMD_AT = re.compile(r"^\s*(?:/[A-Za-z0-9_]+)?@([A-Za-z0-9_]+)\b")
-
-
-def for_another_bot(text: str) -> str | None:
-    """The other bot's name if the message targets it, else None.
-
-    Catches both ways of addressing a bot: `/command@BotName` and a plain
-    `@BotName, do this` — a person driving their assistant uses both.
-
-    TWO ESCAPES, without which the rule does harm:
-    1) While our own name is unknown (getMe did not succeed) nothing is taken:
-       better to wake up once too often than to swallow an address to ourselves.
-    2) If we are named later in the text, the message is addressed to BOTH and
-       must not be taken away. "@OtherBot, ask Logic whether…" is for us too.
-    """
-    m = _CMD_AT.match(text or "")
-    if not m or not _ME_NAME[0]:
-        return None
-    who = m.group(1)
-    # BOTS ONLY. A Telegram bot username MUST end in "bot" — that is their
-    # registration rule, not a guess. Without this check the rule swallowed an
-    # address to a HUMAN: "@someone please confirm the package" went silent.
-    # Caught by a control in the stand, not by reasoning.
-    if not who.lower().endswith("bot"):
-        return None
-    if who.lower() == _ME_NAME[0].lower():
-        return None
-    low = (text or "").lower()
-    for trig in C.TRIGGERS:                       # named us — then it is for us as well
-        if trig.lower() in low:
-            return None
-    return who
-
-
-def _lev(a: str, b: str) -> int:
-    """Levenshtein distance. Early exit on length — nothing to compute."""
-    if abs(len(a) - len(b)) > 2:
-        return 99
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        prev = cur
-    return prev[-1]
-
-
-_FIRST_WORD = re.compile(r"^\s*([^\s,.;:!?()\-–—]+)")
-
-
-def fuzzy_address(text: str) -> int | None:
-    """Position AFTER the name if the first word is the name misspelled, else None.
-
-    People misspell the bot's name and then wonder why it stayed silent. A
-    refusal to answer over one wrong letter is a defect, not strictness.
-    """
-    m = _FIRST_WORD.match(text or "")
-    if not m:
-        return None
-    word = m.group(1)
-    if len(word) < 4:
-        return None
-    low = word.lower()
-    for trig in C.TRIGGERS:
-        g = trig.lower()
-        # A SLACK OF 2 only when BOTH the word and the name are five letters or
-        # more. A four-letter word two edits away from a five-letter name is more
-        # often a DIFFERENT word than a typo. Measured when this was added.
-        limit = 2 if (len(g) >= 5 and len(low) >= 5) else 1
-        if _lev(low, g) <= limit:
-            return m.end(1)
-    return None
-
-
-_FLOOD_TIMES: dict[Any, list[float]] = {}   # sender -> recent message times
-_FLOOD_UNTIL: dict[Any, float] = {}         # sender -> muted until (epoch)
-
-
-def flood_muted(sender_id: Any, chat_id: int, name: str = "") -> bool:
-    """True if the sender is inside an anti-flood pause (do not take the message).
-
-    Counts EVERYONE, the principal included: a compromised account is exactly
-    where a flood would come from, so there are no exemptions.
-    """
-    if sender_id is None:
-        return False
-    now_t = time.time()
-    until = _FLOOD_UNTIL.get(sender_id, 0.0)
-    if now_t < until:
-        return True                          # already paused — mute silently
-    if until:                                # pause expired — clean up after it
-        _FLOOD_UNTIL.pop(sender_id, None)
-    # BOUND THE GROWTH. Without this the dicts keep one entry per person who
-    # ever wrote and never clean up — unlike _SEEN_UNKNOWN, which resets at 500.
-    # A daemon that lives for months leaks slowly. Clear those whose window is
-    # empty and who are not currently paused.
-    if len(_FLOOD_TIMES) > 500:
-        for k in [k for k, v in _FLOOD_TIMES.items()
-                  if (not v or now_t - max(v) > C.FLOOD_T)
-                  and _FLOOD_UNTIL.get(k, 0.0) <= now_t]:
-            _FLOOD_TIMES.pop(k, None)
-            _FLOOD_UNTIL.pop(k, None)
-    times = [x for x in _FLOOD_TIMES.get(sender_id, ()) if now_t - x < C.FLOOD_T]
-    times.append(now_t)
-    _FLOOD_TIMES[sender_id] = times
-    if len(times) > C.FLOOD_N:
-        _FLOOD_UNTIL[sender_id] = now_t + C.FLOOD_K * 60
-        _FLOOD_TIMES[sender_id] = []
-        who = name or str(sender_id)
-        if not C.DRY_RUN:
-            call("sendMessage", chat_id=chat_id,
-                 text=(f"{C.REPLY_PREFIX} {who}: too many messages — paused for "
-                       f"{C.FLOOD_K} min. Messages are still kept; they are not "
-                       f"taken into work until the pause ends."))
-        print(f"[{now()}] FLOOD: {sender_id} in {chat_id} muted for {C.FLOOD_K} min")
-        return True
-    return False
-
-
-def rotate_log() -> None:
-    """The chat log does not grow forever: past LOG_MAX_BYTES it moves to a
-    single backup (.1) and writing starts again. Cheap, and it will not fill the
-    disk over a year without anyone noticing."""
-    try:
-        if C.LOG.exists() and C.LOG.stat().st_size > C.LOG_MAX_BYTES:
-            bak = C.LOG.with_suffix(C.LOG.suffix + ".1")
-            if bak.exists():
-                bak.unlink()
-            C.LOG.rename(bak)
-            print(f"[{now()}] log rotated: {C.LOG.name} -> {bak.name} "
-                  f"(>{C.LOG_MAX_BYTES} bytes)")
-    except OSError as e:
-        print(f"[{now()}] rotate_log: {type(e).__name__}: {e}")
-
-
 def replying_to_me(msg: dict[str, Any]) -> bool:
     """Is this a reply to one of the assistant's own messages?
 
@@ -813,70 +760,11 @@ def replying_to_me(msg: dict[str, Any]) -> bool:
     return bool(_ME[0]) and (replied.get("from") or {}).get("id") == _ME[0]
 
 
-_EYE_CACHE: dict = {}                          # {chat_id: (ts, [message_id, ...])}
-
-
-def open_eye_backlog(chat_id: int) -> list:
-    """message_ids in this chat that wear 👀 (a request exists) and were NOT
-    closed by `answers` — the full open set.
-
-    The curator navigates by these eyes (👀 = not processed), so the whole
-    backlog rides on every request to the assistant. It catches eyes that aged
-    out of requests/ into served/ and so dropped out of sight — over a long
-    session more than a hundred piled up that way, each a "not done" the
-    principal reads by, none of them answered. Computed from FILES (not a state
-    file that could drift), cached 10s so it is not recomputed on every message:
-    `closed` from sent/+outbox/ (the assistant's replies carrying `answers`),
-    `got` from requests/+served/ (the requests that received 👀).
-    """
-    cached = _EYE_CACHE.get(chat_id)
-    if cached and time.time() - cached[0] < 10:
-        return cached[1]
-    got, closed = set(), set()
-    name_re = re.compile(rf"^(\d+)-{chat_id}\.json$")
-    # An eye on YOUR message is the request <mid>-<chat>.json. But the eye the
-    # bridge places on MY message when the principal reacts to it is filed as
-    # reaction-<chat>-<mid>.json (mid at the END) — the same open eye, but the
-    # name never matched <mid>-<chat>, so it was invisible to the list and hung
-    # forever. Count it too, keyed by mid.
-    rx_re = re.compile(rf"^reaction-{chat_id}-(\d+)\.json$")
-    for base in (C.REQUESTS, C.SERVED):
-        for f in base.glob(f"*-{chat_id}.json"):
-            m = name_re.match(f.name)
-            if m:
-                got.add(int(m.group(1)))
-        for f in base.glob(f"reaction-{chat_id}-*.json"):
-            m = rx_re.match(f.name)
-            if m:
-                got.add(int(m.group(1)))
-    ans_re = re.compile(rf"^(\d+)-{chat_id}$")
-    ansrx_re = re.compile(rf"^reaction-{chat_id}-(\d+)$")
-    for base in (C.SENT, C.OUTBOX):
-        for f in base.glob("*.json"):
-            try:
-                item = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            for a in (item.get("answers") or []):
-                mm = ans_re.match(str(a)) or ansrx_re.match(str(a))
-                if mm:
-                    closed.add(int(mm.group(1)))
-    ids = sorted(got - closed)
-    _EYE_CACHE[chat_id] = (time.time(), ids)
-    return ids
-
-
 def accept(chat_id: int, msg: dict[str, Any], rec: dict[str, Any], text: str,
            frm: dict[str, Any], voice: bool = False) -> None:
     """Decide whether this is an address, and if so queue it."""
     pol = C.policy(chat_id)
     private_to_principal = chat_id == pol["principal"]
-
-    other = for_another_bot(text) if pol.get("ignore_other_bots") else None
-    if other:
-        log_line(rec)
-        print(f"[{now()}] command for @{other} — not ours, left in the log only")
-        return
 
     m = _ADDRESS_RE.match(text)
     if pol.get("all_addressed"):
@@ -889,14 +777,12 @@ def accept(chat_id: int, msg: dict[str, Any], rec: dict[str, Any], text: str,
     elif m:
         ask = re.sub(r"^\s*[:,.;!?\-–—]+\s*", "", text[m.end():]).strip()
     else:
-        # A NAME WITH ONE WRONG LETTER IS STILL THE NAME. Silence over a typo
-        # reads as a broken bot, not as strictness.
         fz = fuzzy_address(text)
         if fz is None:
             log_line(rec)
             return
         ask = re.sub(r"^\s*[:,.;!?\-–—]+\s*", "", text[fz:]).strip()
-        rec["by_typo"] = True             # visible in the log that a typo called us
+        rec["by_typo"] = True             # the log shows the call was misspelled
 
     if pol["may_address"] != "all" and frm.get("id") not in pol["may_address"]:
         log_line(rec)
@@ -928,6 +814,10 @@ def accept(chat_id: int, msg: dict[str, Any], rec: dict[str, Any], text: str,
     # only in the assistant's memory is a rule that will lapse.
     rec["language"] = pol.get("language")
     rec["context"] = tail(chat_id, 6)         # so it does not decide blind
+    # THE LIST OF OPEN EYES ON EVERY REQUEST (the operator's design, 2026-08-23):
+    # 👀 = not handled, and they navigate by it. We attach the whole open set
+    # (including those moved to served, which pending_eyes cannot see) so that
+    # nothing is lost and the ones that fired do get closed.
     (C.REQUESTS / f"{rid}.json").write_text(
         json.dumps({**rec, "request_id": rid, "open_eyes": open_eye_backlog(chat_id)},
                    ensure_ascii=False, indent=2),
@@ -981,16 +871,22 @@ def attachments_of(msg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9А-Яа-яЁё._ -]")
+# WHAT IS UNSAFE IS LISTED; WHAT IS MERELY FOREIGN IS NOT. This used to allow
+# Latin and Cyrillic letters only — every other script was replaced by "_", so a
+# Greek, Hebrew or Chinese file name arrived as a row of underscores. That is a
+# denial dressed as safety: the danger in a name is separators, quotes, control
+# characters and the shell, not the alphabet it is written in. The bridge speaks
+# seven languages; it must not mangle the eighth one's file names.
+_SAFE_NAME = re.compile(r"[\x00-\x1f\x7f/\\:*?\"'<>|`$&;]")
 
 
 def safe_name(name: str | None, default: str) -> str:
     """A name that came from someone else is not a path.
 
-    Everything before the last separator is dropped, then anything outside a
-    small alphabet is replaced. A file called `../../config.py` becomes
-    `config.py` and lands in the request's own directory, where it can
-    overwrite nothing.
+    Everything before the last separator is dropped, then the characters that
+    are dangerous in a path or a header are replaced. A file called
+    `../../config.py` becomes `config.py` and lands in the request's own
+    directory, where it can overwrite nothing.
     """
     base = PurePosixPath(str(name or default)).name or default
     base = _SAFE_NAME.sub("_", base).strip(". ") or default
@@ -1059,12 +955,167 @@ def file_job(chat_id: int, msg: dict[str, Any], rec: dict[str, Any],
     # shows a thing instead of a blank line.
     text = caption.strip()
     if not text:
-        what = ", ".join(f"{g['name']} ({g.get('bytes', 0) // 1024} KB)"
+        what = ", ".join(T("attach.size", name=g["name"], kb=g.get("bytes", 0) // 1024)
                          if "path" in g else f"{g.get('name')} — {g['refused']}"
-                         for g in got) or "attachment"
-        text = f"[attachment: {what}]"
+                         for g in got) or T("attach.one")
+        text = T("attach.list", what=what)
     rec["text"] = text
     accept(chat_id, msg, rec, text, msg.get("from", {}))
+
+
+_FLOOD_TIMES: dict[int, list[float]] = {}
+_FLOOD_UNTIL: dict[int, float] = {}
+
+
+def flood_muted(sender_id: Any, chat_id: int, name: str = "") -> bool:
+    """True when the sender is currently in an anti-flood pause (the message is
+    NOT to be acted on). Counts EVERYONE, the principal included: a compromised
+    account is exactly where a flood would come from, so there are no
+    exceptions.
+    """
+    if sender_id is None:
+        return False
+    now_t = time.time()
+    until = _FLOOD_UNTIL.get(sender_id, 0.0)
+    if now_t < until:
+        return True                          # already paused: mute in silence
+    if until:                                # the pause is over: tidy up
+        _FLOOD_UNTIL.pop(sender_id, None)
+    # BOUND THE GROWTH. Without this the dictionaries keep an entry for everyone
+    # who ever wrote and are never cleared — unlike _SEEN_UNKNOWN, which resets
+    # at 500. A daemon that lives for months leaks slowly. We drop those whose
+    # window is empty and who are not currently paused.
+    if len(_FLOOD_TIMES) > 500:
+        for k in [k for k, v in _FLOOD_TIMES.items()
+                  if (not v or now_t - max(v) > C.FLOOD_T)
+                  and _FLOOD_UNTIL.get(k, 0.0) <= now_t]:
+            _FLOOD_TIMES.pop(k, None)
+            _FLOOD_UNTIL.pop(k, None)
+    times = [x for x in _FLOOD_TIMES.get(sender_id, ()) if now_t - x < C.FLOOD_T]
+    times.append(now_t)
+    _FLOOD_TIMES[sender_id] = times
+    if len(times) > C.FLOOD_N:
+        _FLOOD_UNTIL[sender_id] = now_t + C.FLOOD_K * 60
+        _FLOOD_TIMES[sender_id] = []
+        who = name or str(sender_id)
+        if not C.DRY_RUN:
+            call("sendMessage", chat_id=chat_id,
+                 text=f"{C.REPLY_PREFIX} " + T("flood.muted", who=who, minutes=C.FLOOD_K))
+        print(f"[{now()}] FLOOD: {sender_id} in {chat_id} muted for {C.FLOOD_K} min")
+        return True
+    return False
+
+
+
+
+# ── EXTERNAL HANDLERS ──────────────────────────────────────────────────────
+# The extension point. The bridge carries no feature of its operator's own; an
+# installation-specific command is an external program named in settings.json.
+# The contract is deliberately the smallest thing that works, so a handler can
+# be written in any language:
+#
+#   in  (stdin)  one JSON object: what was said, by whom, where.
+#   out (stdout) one JSON object: {"text": "...", "files": ["/abs/path", ...]}
+#   exit 0 = fine. Anything else, or unparsable output, is reported as a
+#   failure to the person who typed the command — never swallowed.
+#
+# Nothing is trusted from the far side: the text is capped, the file list is
+# capped, each path must be an existing regular file, and the whole run is
+# killed on a timeout. A handler that hangs must not take the bridge with it.
+HANDLER_TEXT_MAX = 3800          # Telegram hard limit is 4096; leave room
+HANDLER_FILES_MAX = 10
+
+
+def handler_payload(h: dict[str, Any], chat_id: int, msg: dict[str, Any],
+                    m: "re.Match[str]", text: str) -> dict[str, Any]:
+    """Everything the handler is told. Kept flat and boring on purpose."""
+    frm = msg.get("from") or {}
+    named = {k: v for k, v in (m.groupdict() or {}).items() if v is not None}
+    return {
+        "command": h["command"],
+        "text": text,
+        "arg": (named.get("arg") or "").strip(),
+        "groups": [g for g in (m.groups() or ()) if g is not None],
+        "named": named,
+        "chat_id": chat_id,
+        "chat_type": (msg.get("chat") or {}).get("type"),
+        "message_id": msg.get("message_id"),
+        "from": {"id": frm.get("id"),
+                 "name": frm.get("username") or frm.get("first_name") or ""},
+        "bridge": {"root": str(C.ROOT), "bot_name": C.BOT_NAME},
+    }
+
+
+def handler_job(h: dict[str, Any], chat_id: int, msg: dict[str, Any],
+                m: "re.Match[str]", text: str) -> None:
+    """Run one declared external handler and deliver what it gives back."""
+    name = h["command"]
+    try:
+        r = subprocess.run(h["run"], input=json.dumps(handler_payload(h, chat_id, msg, m, text),
+                                                     ensure_ascii=False),
+                           capture_output=True, text=True, timeout=h["timeout"])
+    except subprocess.TimeoutExpired:
+        call("sendMessage", chat_id=chat_id,
+             text=T("handler.timeout", command=name, seconds=int(h["timeout"])))
+        print(f"[{now()}] handler {name}: timeout after {h['timeout']}s")
+        return
+    except OSError as e:                      # not installed, not executable
+        call("sendMessage", chat_id=chat_id,
+             text=T("handler.cannot_run", command=name, error=str(e)))
+        return
+
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip()[-300:]
+        call("sendMessage", chat_id=chat_id,
+             text=T("handler.failed", command=name, code=r.returncode, tail=tail))
+        print(f"[{now()}] handler {name}: exit {r.returncode}")
+        return
+
+    out = (r.stdout or "").strip()
+    try:
+        # A handler may print progress before its answer; the ANSWER is the last
+        # JSON object. Taking the whole stream would make any stray line fatal.
+        data = json.loads(out) if out.startswith("{") else json.loads(out.splitlines()[-1])
+        if not isinstance(data, dict):
+            raise ValueError("top level is not an object")
+    except (ValueError, IndexError) as e:
+        call("sendMessage", chat_id=chat_id,
+             text=T("handler.bad_output", command=name, error=str(e), tail=out[-200:]))
+        print(f"[{now()}] handler {name}: unparsable output")
+        return
+
+    txt = str(data.get("text") or "")
+    if len(txt) > HANDLER_TEXT_MAX:
+        txt = txt[:HANDLER_TEXT_MAX] + T("handler.truncated")
+    files = [Path(str(f)).expanduser() for f in (data.get("files") or [])][:HANDLER_FILES_MAX]
+
+    if txt:
+        call("sendMessage", chat_id=chat_id, text=txt)
+    for f in files:
+        if f.is_file():
+            send_file(chat_id, f, caption=str(data.get("caption") or "")[:1024])
+        else:
+            call("sendMessage", chat_id=chat_id, text=T("handler.no_such_file", path=str(f)))
+    if not txt and not files:
+        call("sendMessage", chat_id=chat_id, text=T("handler.said_nothing", command=name))
+
+
+def handler_for(text: str, chat_id: int, chat: dict[str, Any]):
+    """The declared handler this message is for, or (None, None).
+
+    WHERE IS CHECKED HERE, not inside the job: a handler that may not run in
+    this chat must not even learn that the message existed.
+    """
+    for h in C.HANDLERS:
+        m = h["re"].match(text or "")
+        if not m:
+            continue
+        if h["where"] == "principal_private" and not (
+                chat.get("type") == "private"
+                and chat_id == C.policy(chat_id).get("principal")):
+            continue
+        return h, m
+    return None, None
 
 
 def handle(update: dict[str, Any], whoami: bool) -> None:
@@ -1074,21 +1125,6 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
     chat = msg.get("chat", {})
     chat_id = chat.get("id")
     text = msg.get("text") or msg.get("caption") or ""
-    # EMPTY TEXT IS NOT AN EMPTY MESSAGE. A sticker, a photo without a caption,
-    # a poll or a contact arrive with neither text nor caption, and the request
-    # reached the assistant as an empty string: you can see that someone wrote,
-    # not WHAT. In a room where everything counts as addressed this shows up at
-    # once. Same class as an unknown chat leaving no trace: drop the
-    # unrecognised WITH A REASON, never into silence.
-    if not text:
-        _kinds = [k for k in ("sticker", "photo", "document", "video", "audio",
-                              "voice", "video_note", "animation", "poll", "contact",
-                              "location", "venue", "dice", "game", "story",
-                              "new_chat_members", "left_chat_member",
-                              "pinned_message", "forward_origin")
-                  if msg.get(k)]
-        if _kinds:
-            text = "[no text: " + ", ".join(_kinds) + "]"
 
     if whoami:
         print(f"  chat_id={chat_id}  type={chat.get('type')}  "
@@ -1113,8 +1149,9 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
             print(f"[{now()}] message from a chat that is NOT allowed: "
                   f"chat_id={chat_id} type={chat.get('type')} "
                   f"title={title} — add it to chats.json to let it in")
-            # AND A TRACE ON DISK, not only in the log: otherwise a refusal
-            # looks exactly like no message ever arriving. See C.NEEDS_WHITELIST.
+            # AND A TRACE ON DISK, not only in the log: otherwise a refusal is
+            # indistinguishable from the message never existing. See
+            # C.NEEDS_WHITELIST.
             try:
                 C.NEEDS_WHITELIST.mkdir(parents=True, exist_ok=True)
                 (C.NEEDS_WHITELIST / f"{chat_id}.json").write_text(
@@ -1125,10 +1162,10 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
                         "first_seen": now(),
                         "first_text": (msg.get("text") or msg.get("caption") or "")[:400],
                         "from": (msg.get("from") or {}).get("first_name"),
-                        "why": "chat is not in chats.json — messages from it are DROPPED",
+                        "why": "chat is not in chats.json — its messages are DISCARDED",
                         "how_to_admit": "add this chat_id to chats.json and restart the bridge",
                     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            except Exception as e:                 # the disk must not take the bridge down
+            except Exception as e:                       # the disk must not kill the bridge
                 print(f"[{now()}] could not write needs_whitelist: {e}")
         return
 
@@ -1148,9 +1185,9 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
     }
 
     # ANTI-FLOOD, and it does NOT spare the principal: a compromised account is
-    # exactly where a flood would come from, so an exemption here would be the
-    # hole. Whoever is over the limit gets logged but NOT processed — no
-    # downloads, no request.
+    # exactly where a flood would come from, so an exception here would be the
+    # hole. Past the limit the message is logged but NOT acted on (no download,
+    # no request).
     if flood_muted(frm.get("id"), chat_id,
                    frm.get("username") or frm.get("first_name") or ""):
         log_line(rec)
@@ -1166,13 +1203,23 @@ def handle(update: dict[str, Any], whoami: bool) -> None:
                          daemon=True).start()
         return
 
-    # AN ATTACHMENT WITHOUT A CAPTION ARRIVED AS AN EMPTY REQUEST — and once
-    # that already cost a lost picture: on 2026-08-21 a third party's photo
-    # landed in the inbox as a blank and was closed as "nothing to answer". The
+    # AN ATTACHMENT WITHOUT A CAPTION ARRIVED AS AN EMPTY REQUEST — and that has
+    # already cost one lost image: on 2026-08-21 a screenshot from a third party
+    # landed in the inbox as emptiness and was closed as "nothing to answer". The
     # bridge read only text and caption; everything else did not exist for it.
     att = attachments_of(msg)
     if att:
         threading.Thread(target=_guarded, args=(file_job, chat_id, msg, rec, att, text),
+                         daemon=True).start()
+        return
+
+    # EXTERNAL HANDLERS COME BEFORE accept: a declared command is a call to a
+    # program, not a message to the assistant, and it creates no request. It is
+    # logged like everything else — a command is an event too.
+    h, hm = handler_for(text or "", chat_id, chat)
+    if h:
+        log_line({**rec, "handler": h["command"], "arg": (text or "")[:200]})
+        threading.Thread(target=_guarded, args=(handler_job, h, chat_id, msg, hm, text or ""),
                          daemon=True).start()
         return
 
@@ -1197,10 +1244,28 @@ def handle_reaction(mr: dict[str, Any]) -> None:
     emoji = [e.get("emoji") for e in mr.get("new_reaction", []) if e.get("type") == "emoji"]
     user = mr.get("user") or {}
     uid = user.get("id")
+    # REACTIONS GO THROUGH THE ANTI-FLOOD TOO. It stood only on the path of
+    # messages, while a reaction appends a line to reactions.jsonl and to
+    # bridge.out — neither of them rotated. 20 000 reactions from an outsider
+    # went through in 0.9 s (audit, 2026-08-25): about 13 MiB a day, and a full
+    # disk killed the bridge through a corrupted offset. An approver's mark
+    # matters, but not enough to be accepted without counting.
+    if uid is not None and uid not in C.policy(chat_id)["approvers"] \
+            and flood_muted(uid, chat_id, user.get("first_name") or ""):
+        return
     rec = {"at": now(), "chat_id": chat_id, "message_id": mr.get("message_id"),
            "emoji": emoji, "user_id": uid, "name": user.get("first_name"),
            "approver": uid in C.policy(chat_id)["approvers"]}
-    with C.ROOT.joinpath("reactions.jsonl").open("a", encoding="utf-8") as f:
+    # ROTATION. The file grew without limit, and _seen() reads it WHOLE on every
+    # check — so it also slowed the bridge down as it grew.
+    _rx = C.ROOT.joinpath("reactions.jsonl")
+    try:
+        if _rx.exists() and _rx.stat().st_size > 8 * 1024 ** 2:
+            _rx.replace(C.ROOT / "reactions.jsonl.1")
+            print(f"[{now()}] the reaction log was rotated (8 MB)")
+    except OSError as e:
+        print(f"[{now()}] the reaction log was NOT rotated: {type(e).__name__}: {e}")
+    with _rx.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     who = "PRINCIPAL" if rec["approver"] else f"outsider ({uid})"
     print(f"[{now()}] reaction {emoji} on {mr.get('message_id')} by {who}")
@@ -1233,7 +1298,7 @@ def handle_reaction(mr: dict[str, Any]) -> None:
                         "from_principal": True, "reaction": emoji,
                         "on_my_message": what_i_said(chat_id, mid),
                         "text": f"reaction {' '.join(emoji)}",
-                        "ask": f"reaction {' '.join(emoji)} on my message",
+                        "ask": T("reaction.ask", emoji=" ".join(emoji)),
                         "topic": C.policy(chat_id).get("topic"),
                         "language": C.policy(chat_id).get("language"),
                         "context": tail(chat_id, 4)}, ensure_ascii=False, indent=2),
@@ -1272,11 +1337,17 @@ def _close(pf: Path, prop: dict[str, Any], verdict: str,
     DECIDED ONLY ONCE, UNDER THE LOCK. Two paths race to close one proposal —
     a mark (decide, main thread) and expiry (sweep_proposals, pump). Whoever
     takes _STATE_LOCK first decides; the loser sees the decision already
-    recorded and returns. So a grant minted by APPROVED is never overwritten
-    by a late EXPIRED, nor the reverse — no mixed state where the consent log
-    says EXPIRED yet a grant exists.
+    recorded (or pf already gone) and returns. So a grant minted by APPROVED
+    is never overwritten by a late EXPIRED, nor the reverse — no mixed state
+    where the consent log says EXPIRED yet a grant exists.
     """
     with _STATE_LOCK:
+        # The sign of "already decided" is the presence of DECIDED/pf.name. It
+        # is written FIRST among the final steps of _close_locked (before the pf
+        # unlink), and both closers are serialised on _STATE_LOCK, so the second
+        # one always finds it in place. Also checking pf.exists() is unnecessary
+        # and harmful: a unit test calls _close with a synthetic pf that has no
+        # file on disk, and that is legitimate.
         if (C.DECIDED / pf.name).exists():
             return
         _close_locked(pf, prop, verdict, uid, emoji)
@@ -1293,15 +1364,15 @@ def _close_locked(pf: Path, prop: dict[str, Any], verdict: str,
     prop["proposal_message_id"] = prop.get("message_id")
     prop["proposal_chat_id"] = prop.get("chat_id")
     # A STANDING RULE IS BORN HERE AND NOWHERE ELSE. A proposal may carry a
-    # rule; it reaches the journal only together with the numeric id of whoever
-    # placed the mark, the mark itself, and the proposal number. The assistant
-    # PROPOSES a rule and never writes it in — the same prohibition as in
-    # institutional clearances: the constrained party does not manufacture the
-    # object that constrains it.
-    # A BATCH. One mark — one CONSIGNMENT to ONE room, and every file in it is
-    # named by fingerprint. This is not "a to-do list under one checkmark": five
-    # files of one consignment are one matter with five parts, while five
-    # separate matters still cannot be joined this way.
+    # rule; it enters the book only together with the numeric id of whoever set
+    # the mark, the mark itself and the proposal's number. The assistant
+    # PROPOSES a rule and never writes one — the same prohibition stated for
+    # warrants: the constrained party does not manufacture the object that
+    # constrains it.
+    # A BATCH. One mark — one DELIVERY into ONE room, with every file in it
+    # named by its digest. This is not "a to-do list under a single tick": five
+    # files of one delivery are one matter with five parts, and five different
+    # matters still may not be joined this way.
     if verdict == "APPROVED" and prop.get("batch") and uid:
         try:
             gs = C.grants()
@@ -1316,10 +1387,10 @@ def _close_locked(pf: Path, prop: dict[str, Any], verdict: str,
                            "proposal_message_id": prop.get("message_id"),
                            "used_at": None})
             _atomic_write(C.GRANTS, json.dumps(gs, ensure_ascii=False, indent=1))
-            print(f"[{now()}] BATCH APPROVED: {len(prop['batch']['files'])} "
-                  f"files -> {prop['batch']['chat_id']} (mark {uid})")
+            print(f"[{now()}] BATCH ALLOWED: {len(prop['batch']['files'])} "
+                  f"files -> {prop['batch']['chat_id']} (mark by {uid})")
         except Exception as e:
-            print(f"[{now()}] batch NOT written: {type(e).__name__}: {e}")
+            print(f"[{now()}] the batch was NOT recorded: {type(e).__name__}: {e}")
 
     if verdict == "APPROVED" and prop.get("rule") and uid:
         try:
@@ -1336,13 +1407,13 @@ def _close_locked(pf: Path, prop: dict[str, Any], verdict: str,
             rooms = rule.get("chats") or [rule.get("chat_id")]
             print(f"[{now()}] RULE ADDED {rule['id']} "
                   f"«{rule.get('project') or '—'}»: {where} -> {rooms} "
-                  f"(mark {uid})")
+                  f"(mark by {uid})")
         except Exception as e:
-            print(f"[{now()}] rule NOT written: {type(e).__name__}: {e}")
+            print(f"[{now()}] the rule was NOT recorded: {type(e).__name__}: {e}")
 
-    # The decision record — atomic, and FIRST of the final steps: its presence
-    # is what _close's idempotency checks, so it must land whole before pf is
-    # gone. os.replace leaves no half-file.
+    # THE DECISION RECORD is written atomically and FIRST among the final
+    # steps: its presence is what _close's idempotence checks, so it must land
+    # whole before pf disappears. os.replace leaves no half file.
     _atomic_write(C.DECIDED / pf.name, json.dumps(prop, ensure_ascii=False))
     pf.unlink(missing_ok=True)
     # Wake the assistant by the same path an ordinary message wakes it.
@@ -1425,7 +1496,7 @@ def decide(chat_id: int, message_id: int | None, emoji: list[str],
     # order was corrected and the code moved on without it. A comment that
     # teaches the inverse of the code is worse than no comment: the next reader
     # trusts it, and the reader after that restores the bug to match. Found by
-    # an external source review.)
+    # Arkadiy Miteiko's source review of v0.2.)
     _close(pf, prop, verdict, uid=uid, emoji=emoji)
     print(f"[{now()}] mark accepted: {verdict} by {uid} — "
           f"{ack(chat_id, message_id)}")
@@ -1440,11 +1511,11 @@ def _seen(chat_id: int, message_id: int) -> bool:
     escalating reminder waits for.
 
     THE REACTOR MUST BE AN APPROVER, not just anyone. In a group the reminder
-    hangs in, an outsider could put any emoji on the bot's message and silently
-    retire an escalation the principal never saw. So we require `approver`,
-    which handle_reaction already stamps on every record (uid in approvers).
-    This also excludes the bridge's OWN marks: it is not an approver, so its
-    👀 never counts as "the principal saw it".
+    hangs in, an outsider — or another AI — could put any emoji on the bot's
+    message and silently retire an escalation the principal never saw. So we
+    require `approver`, which handle_reaction already stamps on every record
+    (uid in approvers). This also excludes the bridge's OWN marks: it is not
+    an approver, so its 👀 never counts as "the principal saw it".
     """
     log = C.ROOT / "reactions.jsonl"
     if message_id is None or not log.exists():
@@ -1461,9 +1532,21 @@ def _seen(chat_id: int, message_id: int) -> bool:
 
 
 def control_question() -> str | None:
-    """On every SELFCHECK_EVERY-th address from the principal, return the text of
-    a control question (present), otherwise None. Counts by a counter file. Fully
-    guarded: any misfire -> None, message delivery does not suffer."""
+    """On every SELFCHECK_EVERY-th message from the principal, return the text
+    of a control question (present); otherwise None. Counts via a counter file.
+    Fully guarded: any misfire -> None, and the delivery never suffers."""
+    # THE SWITCH IS EXPLICIT, NOT A CONSEQUENCE OF DIVISION. SELFCHECK_EVERY = 0
+    # means "do not ask"; without this line, n % 0 below would raise
+    # ZeroDivisionError, the blanket except would swallow it, and the check would
+    # die IN SILENCE while writing a log line on every message. Exactly the
+    # failure the comment twenty lines below warns about.
+    # AN EMPTY COMMAND MEANS "THERE IS NO SUCH INSTRUMENT", not "run nothing".
+    # The path to the checker lives in an installation's settings; a stranger
+    # does not have one.
+    if not getattr(C, "SELFCHECK_PRESENT", None):
+        return None
+    if getattr(C, "SELFCHECK_EVERY", 0) <= 0:
+        return None
     try:
         n = 0
         if C.SELFCHECK_COUNT.exists():
@@ -1472,12 +1555,22 @@ def control_question() -> str | None:
         C.SELFCHECK_COUNT.write_text(str(n))
         if n % C.SELFCHECK_EVERY != 0:
             return None
-        if not C.SELFCHECK_PRESENT:
-            return None          # no command configured — off, not broken
         r = subprocess.run(C.SELFCHECK_PRESENT, capture_output=True,
                            text=True, timeout=8)
         out = (r.stdout or "").strip()
-        return out or None
+        # THE CHECK HAS NO RIGHT TO DIE IN SILENCE. A non-zero exit code raises
+        # no exception: an empty stdout came back as None, and to the operator
+        # that is indistinguishable from "the fifth message has not come round
+        # yet". One corrupted line in state.json (a file outside git) switched
+        # the check off FOR EVER with no sign at all. Found by an audit on
+        # 2026-08-25 — inside the very instrument that exists to catch me
+        # confident and wrong.
+        if r.returncode != 0 or not out:
+            err = (r.stderr or "").strip().splitlines()[-1:] or ["empty answer"]
+            print(f"[{now()}] SELFCHECK DID NOT ANSWER (exit {r.returncode}): {err[0][:160]}")
+            return (f"{getattr(C, 'REPLY_PREFIX', '')} "
+                    + T("selfcheck.silent", code=r.returncode, error=err[0][:200]))
+        return out
     except Exception as e:
         print(f"[{now()}] selfcheck skipped: {type(e).__name__}: {e}")
         return None
@@ -1504,7 +1597,7 @@ def due_reminders() -> None:
     """
     now_ts = datetime.now(timezone.utc)
 
-    def retire(f: pathlib.Path, why: str) -> None:
+    def retire(f: Path, why: str) -> None:
         f.rename(C.SENT_REMINDERS / f.name)
         print(f"[{now()}] reminder retired ({why}): {f.name}")
 
@@ -1514,6 +1607,15 @@ def due_reminders() -> None:
             when = datetime.fromisoformat(r["at"])
         except Exception as e:
             print(f"[{now()}] malformed reminder {f.name}: {e}")
+            continue
+        # text/chat_id ARE CHECKED HERE rather than met as a KeyError below. The
+        # try used to cover only loads+at; a reminder with `at` but without
+        # text/chat_id raised KeyError outside it → the exception escaped
+        # due_reminders, and EVERY reminder after the broken one in sorted()
+        # went unsent — on that pass and on every pass after. One broken file
+        # silenced the whole queue.
+        if not r.get("text") or r.get("chat_id") is None:
+            print(f"[{now()}] malformed reminder {f.name}: no text/chat_id")
             continue
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
@@ -1533,15 +1635,15 @@ def due_reminders() -> None:
         tries = int(r.get("tries", 0))
         max_tries = int(r.get("max_tries", 24))   # 24 × 5 min ≈ 2 hours
         if ack and tries >= max_tries:
-            give_up = (f"{C.REPLY_PREFIX} reminder (giving up after {tries} tries, "
-                       f"you seem not to have seen it): {r['text']}")
+            give_up = (f"{C.REPLY_PREFIX} "
+                       + T("reminder.gave_up", tries=tries, text=r["text"]))
             if not C.DRY_RUN:
                 call("sendMessage", chat_id=r["chat_id"], text=give_up)
             print(f"[{now()}] reminder CAPPED unacked -> {r['chat_id']}: {r['text'][:40]}")
             retire(f, "capped-unacked")
             continue
 
-        again = "  (reminding again — like it if you saw it)" if tries else ""
+        again = "  " + T("reminder.again") if tries else ""
         text = f"{C.REPLY_PREFIX} reminder: {r['text']}{again}"
         resp = None if C.DRY_RUN else call("sendMessage", chat_id=r["chat_id"], text=text)
         if C.DRY_RUN or (resp and resp.get("ok")):
@@ -1559,22 +1661,315 @@ def due_reminders() -> None:
                 print(f"[{now()}] reminder sent -> {r['chat_id']}: {r['text'][:50]}")
 
 
+_EYE_CACHE: dict = {}                          # {chat_id: (ts, [message_id, ...])}
+
+
+def open_eye_backlog(chat_id: int) -> list:
+    """The message_ids of this chat that carry 👀 (a request was made) and are NOT
+    closed through answers.
+
+    The operator's design, 2026-08-23: the list of open eyes is attached to EVERY
+    request to me (👀 = not handled; they navigate by it). This catches eyes that
+    moved to served, which pending_eyes — scanning only requests/ — cannot see and
+    of which 115 had piled up in one session. Counted from FILES (not from state,
+    so the two cannot drift apart), with a 10 s cache so as not to scan on every
+    message. `closed` comes from sent/+outbox/ (my answers with answers), `got`
+    from requests/+served/ (the requests that received a 👀).
+    """
+    cached = _EYE_CACHE.get(chat_id)
+    if cached and time.time() - cached[0] < 10:
+        return cached[1]
+    got, closed = set(), set()
+    name_re = re.compile(rf"^(\d+)-{chat_id}\.json$")
+    # A 👀 on YOUR message is the request <mid>-<chat>.json. BUT the 👀 the bridge
+    # puts on MY message in reply to the principal's reaction is filed as
+    # reaction-<chat>-<mid>.json (mid at the END) — the same open eye, but by name
+    # it did not match <mid>-<chat>, so it was invisible to the list and hung for
+    # ever (a bug found by the operator on 2026-08-24). We count it too, keyed by
+    # mid.
+    rx_re = re.compile(rf"^reaction-{chat_id}-(\d+)\.json$")
+    for base in (C.REQUESTS, C.SERVED):
+        for f in base.glob(f"*-{chat_id}.json"):
+            m = name_re.match(f.name)
+            if m:
+                got.add(int(m.group(1)))
+        for f in base.glob(f"reaction-{chat_id}-*.json"):
+            m = rx_re.match(f.name)
+            if m:
+                got.add(int(m.group(1)))
+    ans_re = re.compile(rf"^(\d+)-{chat_id}$")
+    ansrx_re = re.compile(rf"^reaction-{chat_id}-(\d+)$")
+    for base in (C.SENT, C.OUTBOX):
+        for f in base.glob("*.json"):
+            try:
+                item = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for a in (item.get("answers") or []):
+                mm = ans_re.match(str(a)) or ansrx_re.match(str(a))
+                if mm:
+                    closed.add(int(mm.group(1)))
+    ids = sorted(got - closed)
+    _EYE_CACHE[chat_id] = (time.time(), ids)
+    return ids
+
+
+def pending_eyes() -> None:
+    """Show the ASSISTANT the list of OPEN EYES — what is still not done.
+
+    The operator's design, 2026-08-23: the 👀 is the only indicator of "not
+    answered", and it must not be put out automatically (the signal would go out
+    while the matter would not). So the bridge does NOT put it out; it merely
+    holds the list of what is hanging under the assistant's nose, reliably, as a
+    separate ping, like the control questions — so that it does not rest on
+    memory. Each eye is closed only by a REAL answer (the answers field: it
+    changes the mark and moves the request to served in one go).
+    """
+    open_ = []
+    for f in sorted(C.REQUESTS.glob("*.json")):
+        if f.name.startswith(("reaction-", "verdict-", "needsfile-", "control-", "emoji-notice-",
+                              "pending-eyes-")):
+            continue
+        if time.time() - f.stat().st_mtime < C.EYES_AFTER_MIN * 60:
+            continue                            # still fresh: give it a chance
+        try:
+            r = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        open_.append((f.stem, (r.get("text") or r.get("ask") or "")
+                      .replace("\n", " ")[:40]))
+    existing = sorted(C.REQUESTS.glob("pending-eyes-*.json"))
+    if not open_:
+        for e in existing:                      # nothing hanging: drop the old list
+            e.rename(C.SERVED / e.name)
+        return
+    key = ",".join(i for i, _ in open_)
+    for e in existing:                          # the same set is already shown: leave it
+        try:
+            if json.loads(e.read_text(encoding="utf-8")).get("eyes_key") == key:
+                return
+        except Exception:
+            pass
+    for e in existing:                          # the set changed: replace it
+        e.unlink(missing_ok=True)
+    lines = "\n".join(f"    {i}  {t}" for i, t in open_)
+    stem = f"pending-eyes-{int(time.time())}"
+    C.REQUESTS.joinpath(f"{stem}.json").write_text(json.dumps({
+        "request_id": stem, "chat_id": None, "from_principal": False,
+        "selfcheck": True, "eyes_key": key,
+        "text": T("eyes.open", count=len(open_), lines=lines)},
+        ensure_ascii=False), encoding="utf-8")
+    print(f"[{now()}] open eyes shown to the assistant: {key}")
+
+
+def mail_watch() -> None:
+    """A watch over a shared folder — IT LIVES IN THE BRIDGE, not in the
+    assistant's session.
+
+    The watch used to be started by the assistant's own monitor and had to be set
+    up again every session. On 2026-08-24 the cost of that was measured: the
+    watch process was ALIVE (left over from a previous session) while its events
+    no longer reached the current one — from outside, "stalled" and "deaf" look
+    the same. The bridge is a systemd service and outlives sessions; the
+    guarantee hangs here and no longer depends on anyone remembering to start it.
+
+    Three things, once a minute:
+      1) mirror both sides into the mirror folder from settings (rsync WITHOUT
+         --delete: a deletion in the shared folder does not reach the mirror);
+      2) a new letter on the incoming side -> put a call into requests/, that is,
+         call the assistant through THE SAME channel as Telegram questions;
+      3) a disappearance from the outgoing side = the other side took it — also
+         an event.
+
+    What has been shown is remembered in MAILWATCH_STATE, so the same thing is
+    not announced every minute. The FIRST run silently remembers everything
+    already lying there: a watch must not begin work by shouting about letters
+    dealt with a week ago.
+    """
+    if not (C.MAILWATCH_IN and C.MAILWATCH_OUT and C.MAILWATCH_MIRROR):
+        return                    # not configured in settings.json: stay silent
+    if not C.MAILWATCH_IN.exists():
+        return
+    def _listing(d: Path) -> list:
+        if not d.exists():
+            return []
+        return sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
+
+    # 1) the mirror only adds, never deletes
+    # The mirror keeps each watched folder under ITS OWN NAME. Two installations
+    # name their folders differently, and hard-coding one operator's names put a
+    # stranger's directory layout into a public package.
+    for src, dst in ((C.MAILWATCH_IN, C.MAILWATCH_MIRROR / C.MAILWATCH_IN.name),
+                     (C.MAILWATCH_OUT, C.MAILWATCH_MIRROR / C.MAILWATCH_OUT.name)):
+        if src.exists():
+            dst.mkdir(parents=True, exist_ok=True)
+            try:
+                subprocess.run(["rsync", "-a", f"{src}/", f"{dst}/"],
+                               check=False, capture_output=True, timeout=120)
+            except Exception as e:
+                print(f"[{now()}] the mail mirror did not run: {type(e).__name__}: {e}")
+
+    # 1b) THE MIRROR'S HISTORY. rsync without --delete does not remove files, but
+    # it does overwrite CHANGED ones — so "the mirror only adds" was a comfort
+    # rather than the truth: today's overwrite it mirrored obediently. A commit on
+    # every pass makes every past state reachable.
+    #
+    # The repository sits on the mirror and NOT in the cloud folder: that one
+    # syncs .git file by file without a transaction, and the other side syncs it
+    # too. A git failure must not bring the watch down — hence the broad except
+    # and the silence in the ordinary case.
+    try:
+        if (C.MAILWATCH_MIRROR / ".git").is_dir():
+            g = ["git", "-C", str(C.MAILWATCH_MIRROR)]
+            subprocess.run(g + ["add", "-A"], check=False, capture_output=True, timeout=120)
+            r = subprocess.run(g + ["diff", "--cached", "--quiet"],
+                               check=False, capture_output=True, timeout=60)
+            if r.returncode != 0:                  # there is something to record
+                subprocess.run(g + ["commit", "-q", "-m",
+                                    f"exchange: snapshot {now()}"],
+                               check=False, capture_output=True, timeout=120)
+    except Exception as e:
+        print(f"[{now()}] the mirror history was not recorded: {type(e).__name__}: {e}")
+
+    # 1a) WHAT HAS BEEN HANDED OVER IS READ-ONLY. Added 2026-09-08 by the
+    # operator's word, after an edited package was copied OVER one already
+    # delivered and the handed-over bytes vanished at once from the folder, from
+    # the mirror and from the working copy.
+    #
+    # We take the write bit off FILES and leave directories writable — and that
+    # is not a detail: a file disappearing from the outgoing folder is a tracked
+    # event ("they took it OR we deleted it"), and locking the directory would
+    # break that along with the cloud sync. A file, however, can no longer be
+    # overwritten: a stray `cp` now refuses LOUDLY instead of quietly erasing the
+    # evidence.
+    #
+    # Only the outgoing side: that is OURS. The other side writes into the
+    # incoming one.
+    # Only what is older than SETTLE: a file being written right now must not be
+    # locked — a delivery must not trip over its own protection.
+    SETTLE = 300.0
+    if C.MAILWATCH_OUT.exists():
+        for f in C.MAILWATCH_OUT.rglob("*"):
+            try:
+                if not f.is_file() or time.time() - f.stat().st_mtime < SETTLE:
+                    continue
+                m = f.stat().st_mode
+                if m & 0o222:                      # still writable: lock it
+                    f.chmod(m & ~0o222)
+            except OSError:
+                pass                               # someone else's permissions are not ours
+
+    cur_in, cur_out = _listing(C.MAILWATCH_IN), _listing(C.MAILWATCH_OUT)
+    first_run = not C.MAILWATCH_STATE.exists()
+    try:
+        st = json.loads(C.MAILWATCH_STATE.read_text(encoding="utf-8")) if not first_run else {}
+    except Exception:
+        st, first_run = {}, True
+    # THE STATE BELONGS TO ITS FOLDERS. Change a path in settings and the old
+    # listing suddenly describes somewhere else: every file of the previous
+    # folder reads as "gone", and the watch announces hundreds of disappearances
+    # that never happened. Measured 2026-09-10 on the test bot — one message with
+    # three hundred lines, which is exactly the noise that gets a watch switched
+    # off. So the state records WHICH folders it was taken from, and a change of
+    # path re-baselines in silence, like a first run, saying so once in the log.
+    paths = {"in": str(C.MAILWATCH_IN), "out": str(C.MAILWATCH_OUT)}
+    moved = not first_run and st.get("paths") not in (None, paths)
+    if first_run or moved:
+        C.MAILWATCH_STATE.write_text(json.dumps(
+            {"in": cur_in, "out": cur_out, "paths": paths},
+            ensure_ascii=False), encoding="utf-8")
+        why = "the watched folders changed" if moved else "started"
+        print(f"[{now()}] the mail watch {why}: {len(cur_in)} letters already "
+              f"there (silently)")
+        return
+
+    new_in = [f for f in cur_in if f not in set(st.get("in", []))]
+    gone_out = [f for f in st.get("out", []) if f not in set(cur_out)]
+    C.MAILWATCH_STATE.write_text(json.dumps(
+        {"in": cur_in, "out": cur_out, "paths": paths},
+        ensure_ascii=False), encoding="utf-8")
+    if not (new_in or gone_out):
+        return
+
+    # move the previous call out of sight, or mail notes pile up in the inbox
+    for old in C.REQUESTS.glob("mailwatch-*.json"):
+        old.rename(C.SERVED / old.name)
+
+    parts = []
+    if new_in:
+        parts.append(T("mail.arrived", folder=C.MAILWATCH_IN.name) + "\n"
+                     + "\n".join(f"    {f}" for f in new_in))
+    if gone_out:
+        # NOT "THEY TOOK IT". The watch sees only a snapshot of the folder
+        # before and after, and cannot tell "the counterparty took it" from "we
+        # deleted it ourselves". While the wording was assertive, my own cleanup
+        # of __pycache__ from a delivered package was reported as "the
+        # correspondent took nine files" — that is, the instrument was
+        # manufacturing false evidence about ANOTHER PERSON'S BEHAVIOUR. My own
+        # trace is not their trace.
+        parts.append(T("mail.gone", folder=C.MAILWATCH_OUT.name) + "\n"
+                     + "\n".join(f"    {f}" for f in gone_out))
+    parts.append(T("mail.data_not_orders"))
+
+    # ── BINDING A FOLDER TO A ROOM ─────────────────────────────────────────
+    # A correspondent, 2026-09-01: messages of ONE topic falling into the shared
+    # room were breaking their working channel. Now a folder event is announced
+    # IN ITS OWN room — and ONLY there: whatever matched no pattern goes into no
+    # room at all. Silence is worth more than completeness here: the room was
+    # created for separation, not for a second general stream.
+    for room in C.FOLDER_ROOMS:
+        pattern = room["match"]
+        mine_in = [f for f in new_in if pattern in f]
+        mine_gone = [f for f in gone_out if pattern in f]
+        if not (mine_in or mine_gone):
+            continue
+        chunks = []
+        if mine_in:
+            chunks.append(T("mail.appeared", folder=C.MAILWATCH_IN.name) + "\n"
+                         + "\n".join(f"    {f}" for f in mine_in))
+        if mine_gone:
+            # the same caution as above: my trace is not distinguishable from theirs
+            chunks.append(T("mail.gone_yours", folder=C.MAILWATCH_OUT.name) + "\n"
+                         + "\n".join(f"    {f}" for f in mine_gone))
+        try:
+            C.OUTBOX.joinpath(f"folder-{room['name']}-{time.time_ns()//1_000_000}.json"
+                              ).write_text(json.dumps({
+                "chat_id": room["chat_id"], "done_emoji": "👍",
+                "text": T("mail.room_event", match=pattern) + "\n\n"
+                        + "\n\n".join(chunks),
+            }, ensure_ascii=False), encoding="utf-8")
+            print(f"[{now()}] folder -> room {room['name']}: "
+                  f"{len(mine_in)} appeared, {len(mine_gone)} gone")
+        except Exception as e:
+            print(f"[{now()}] the folder-to-room binding {room['name']} failed: "
+                  f"{type(e).__name__}: {e}")
+    # MILLISECONDS, not seconds: two events in the same second produced ONE
+    # name, and the previous call was silently overwritten on its way to served
+    # (caught by test_mail_watch).
+    stem = f"mailwatch-{time.time_ns() // 1_000_000}"
+    C.REQUESTS.joinpath(f"{stem}.json").write_text(json.dumps({
+        "request_id": stem, "chat_id": None, "from_principal": False,
+        "selfcheck": False, "text": C.MAILWATCH_LABEL + "\n" + "\n\n".join(parts)},
+        ensure_ascii=False), encoding="utf-8")
+    print(f"[{now()}] mail: {len(new_in)} new, {len(gone_out)} taken")
+
+
 def nudge_unanswered() -> None:
-    """Tell the human that their message was accepted, but NOBODY TOOK IT UP.
+    """Tell the person their message was accepted but NOBODY PICKED IT UP.
 
     The 👀 mark means "stored, and it will be answered". That is a promise. If
-    the assistant is not running, there is no one to keep the promise, and the
-    human never learns it: from outside "being read" and "being forgotten" look
-    the same.
+    the assistant is not running there is nobody to keep it, and the person will
+    not learn this: from outside, "being read" and "being forgotten" look the
+    same.
 
-    So the bridge, the only thing here that is certainly alive, speaks for
-    itself. ONCE per message — otherwise the reminder turns into a clatter and
-    gets switched off.
+    So the bridge, the one party here that is certainly alive, speaks for itself.
+    ONCE per message — otherwise the reminder becomes a nuisance and gets
+    switched off.
     """
     cutoff = time.time() - C.NUDGE_AFTER_MIN * 60
     for f in sorted(C.REQUESTS.glob("*.json")):
-        if f.name.startswith(("verdict-", "needsfile-", "reaction-", "control-")):
-            continue                       # these are my own notes, not his waiting
+        if f.name.startswith(("verdict-", "needsfile-", "reaction-", "control-", "pending-eyes-", "mailwatch-")):
+            continue                       # these are my own notes, not their waiting
         try:
             r = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
@@ -1585,63 +1980,70 @@ def nudge_unanswered() -> None:
         if not C.allowed(chat_id):
             continue
         mins = int((time.time() - f.stat().st_mtime) / 60)
-        text = (f"{C.REPLY_PREFIX} accepted and sitting in the inbox, but in "
-                f"{mins} min nobody has picked it up. The 👀 mark promised a "
-                f"reply — the promise is not yet kept. The message is not lost.")
-        if C.DRY_RUN or call("sendMessage", chat_id=chat_id, text=text,
-                             reply_to_message_id=mid).get("ok"):
-            r["nudged"] = now()
+        text = f"{C.REPLY_PREFIX} " + T("nudge.nobody_took_it", minutes=mins)
+        # RETRYING A PERMANENT ERROR FOR EVER — the same pit already described
+        # above for the queue. Measured 2026-08-30: when Telegram no longer
+        # serves the original message, a reply to it gets "message to be replied
+        # not found". That is NOT a temporary failure, but `nudged` was never
+        # set, so every pass tried again — the log filled with dozens of lines
+        # and the operator concluded the bridge had died. Noise that masks a real
+        # breakage costs more than the breakage.
+        #
+        # The order now: first as before, as a reply. If that fails for this
+        # reason, send THE SAME THING unattached to any message: it has to be
+        # said either way, and the attachment is decoration. And if even that
+        # fails, mark it LOUDLY and stop hammering.
+        res = {"ok": True} if C.DRY_RUN else call(
+            "sendMessage", chat_id=chat_id, text=text, reply_to_message_id=mid)
+        if not res.get("ok") and "replied" in str(res.get("description", "")):
+            res = call("sendMessage", chat_id=chat_id, text=text)
+            if res.get("ok"):
+                print(f"[{now()}] NUDGE UNATTACHED: {f.stem} — Telegram no "
+                      f"longer serves the original message, said without a reply")
+        # WE COUNT ATTEMPTS RATHER THAN GUESS WHAT IS PERMANENT. Telegram
+        # returns both temporary troubles (timeout, 429, 5xx) and permanent ones
+        # (chat not found, bot blocked). Listing the permanent ones from memory
+        # is the same guessing we do not allow ourselves elsewhere. So we simply
+        # bound the number of attempts: the temporary has time to pass, the
+        # permanent stops hammering.
+        if not res.get("ok"):
+            r["nudge_tries"] = int(r.get("nudge_tries", 0)) + 1
             f.write_text(json.dumps(r, ensure_ascii=False, indent=2),
                          encoding="utf-8")
-            print(f"[{now()}] NOBODY TO TAKE IT: {f.stem}, {mins} min, told in chat")
+            if r["nudge_tries"] >= NUDGE_TRIES:
+                print(f"[{now()}] NUDGE FAILED {r['nudge_tries']} times, "
+                      f"NOT TRYING AGAIN: {f.stem} — {res.get('description')}")
+                res = {"ok": True, "_gave_up": True,
+                       "description": res.get("description")}
+            else:
+                print(f"[{now()}] nudge failed ({r['nudge_tries']}/"
+                      f"{NUDGE_TRIES}): {f.stem} — {res.get('description')}")
+        if res.get("ok"):
+            r["nudged"] = now()
+            if res.get("_gave_up"):
+                r["nudge_failed"] = str(res.get("description") or "permanent error")
+            f.write_text(json.dumps(r, ensure_ascii=False, indent=2),
+                         encoding="utf-8")
+            print(f"[{now()}] NOBODY TO PICK IT UP: {f.stem}, {mins} min, said in chat")
 
 
-def pending_eyes() -> None:
-    """Show the ASSISTANT the list of OPEN EYES — what is still not done.
+NUDGE_TRIES = 3   # nudge attempts, then a loud refusal
 
-    The eye 👀 is the only indicator of "not answered", and taking it off
-    automatically is not allowed: the signal would go out while the matter
-    stayed. So the bridge does NOT take it off; it reliably puts the list of
-    what is hanging under the assistant's nose, as a separate ping, rather than
-    relying on memory. Each eye closes only on a REAL answer (the answers field:
-    it changes the mark and moves the request to served in one step).
-    """
-    open_ = []
-    for f in sorted(C.REQUESTS.glob("*.json")):
-        if f.name.startswith(("reaction-", "verdict-", "needsfile-", "control-",
-                              "emoji-notice-", "pending-eyes-")):
-            continue
-        if time.time() - f.stat().st_mtime < C.EYES_AFTER_MIN * 60:
-            continue                            # still fresh — give it a chance
-        try:
-            r = json.loads(f.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        open_.append((f.stem, (r.get("text") or r.get("ask") or "")
-                      .replace("\n", " ")[:40]))
-    existing = sorted(C.REQUESTS.glob("pending-eyes-*.json"))
-    if not open_:
-        for e in existing:                      # nothing hanging — retire the list
-            e.rename(C.SERVED / e.name)
-        return
-    key = ",".join(i for i, _ in open_)
-    for e in existing:                          # same set already shown — do not nag
-        try:
-            if json.loads(e.read_text(encoding="utf-8")).get("eyes_key") == key:
-                return
-        except Exception:
-            pass
-    for e in existing:                          # the set changed — replace it
-        e.unlink(missing_ok=True)
-    lines = "\n".join(f"    {i}  {x}" for i, x in open_)
-    stem = f"pending-eyes-{int(time.time())}"
-    C.REQUESTS.joinpath(f"{stem}.json").write_text(json.dumps({
-        "request_id": stem, "chat_id": None, "from_principal": False,
-        "selfcheck": True, "eyes_key": key,
-        "text": (f"OPEN EYES ({len(open_)}) — not answered. Close EACH with a "
-                 f"real answer (the answers field), not a bare mark:\n{lines}")},
-        ensure_ascii=False), encoding="utf-8")
-    print(f"[{now()}] open eyes shown to the assistant: {key}")
+
+def rotate_log() -> None:
+    """The chat log does not grow for ever: past LOG_MAX_BYTES it moves into a
+    single backup (.1) and starts again. Cheap, and it will not quietly fill the
+    disk within a year."""
+    try:
+        if C.LOG.exists() and C.LOG.stat().st_size > C.LOG_MAX_BYTES:
+            bak = C.LOG.with_suffix(C.LOG.suffix + ".1")
+            if bak.exists():
+                bak.unlink()
+            C.LOG.rename(bak)
+            print(f"[{now()}] log rotated: {C.LOG.name} -> {bak.name} "
+                  f"(>{C.LOG_MAX_BYTES} bytes)")
+    except OSError as e:
+        print(f"[{now()}] rotate_log: {type(e).__name__}: {e}")
 
 
 def sweep_old_files() -> None:
@@ -1663,26 +2065,45 @@ def sweep_old_files() -> None:
             except OSError:
                 pass
 
+    # SERVICE WAKE-UP REQUESTS IN requests/ — otherwise they accumulate without
+    # end. reaction-/control-/verdict-/pending-eyes- live exactly once
+    # (pending_eyes and nudge already skip them, so there are no false eyes) but
+    # never leave — measured at about 20 a day on a live machine. We move them
+    # into served/ by age. needsfile- is left alone: it is a file awaiting the
+    # operator's consent.
+    scut = time.time() - C.SERVICE_REQUEST_KEEP_HOURS * 3600
+    if C.REQUESTS.exists():
+        for f in C.REQUESTS.glob("*.json"):
+            if not f.name.startswith(("reaction-", "control-", "emoji-notice-",
+                                      "verdict-", "pending-eyes-")):
+                continue
+            try:
+                if f.stat().st_mtime < scut:
+                    f.rename(C.SERVED / f.name)
+            except OSError:
+                pass
+
 
 def sweep_media(root: Path | None = None, budget: int | None = None,
                 pending: set[str] | None = None) -> list[str]:
-    """Attachments are cleared by OVERFLOW, not by age.
+    """Attachments are cleared on OVERFLOW, not by age.
 
-    The curator's word: a file sent half a year ago may be needed, while forty
-    of today's may not. Age does not know what matters; volume is at least
+    The operator's word: a file sent six months ago may still be needed while
+    forty of today's are not. Age does not know what matters; volume is at least
     honest.
 
-    Three rules, and the second is the most important:
+    Three rules, and the second is the important one:
 
-    1. A request's DIRECTORY is removed whole. One message's attachments are one
-       thing; throwing away half means leaving something unintelligible.
-    2. **A request directory that has NOT YET BEEN ANSWERED is never touched.**
-       Otherwise the sweep eats exactly what is sitting and waiting for me, and
-       the inbox shows a link into the void.
+    1. A request's DIRECTORY is deleted whole. The attachments of one message are
+       one thing; throwing half of them away leaves something incomprehensible.
+    2. **A request's directory that has NOT been answered yet is never touched.**
+       Otherwise the sweep eats exactly what is lying there waiting for me, and
+       the inbox shows a link into emptiness.
     3. Every deletion is printed with its size. A silent sweep is
-       indistinguishable from a loss, and a loss is later blamed on anything.
+       indistinguishable from a loss, and a loss is later explained by anything
+       at all.
 
-    Returns the list of what was cleared — so the caller need not guess.
+    Returns the list of what was cleared, so the caller need not guess.
     """
     root = root or C.MEDIA
     budget = C.MEDIA_BUDGET_BYTES if budget is None else budget
@@ -1707,18 +2128,18 @@ def sweep_media(root: Path | None = None, budget: int | None = None,
         if total <= budget:
             break
         if d.name in pending:
-            continue                          # awaiting a reply — do not touch
+            continue                          # awaiting an answer: leave it
         shutil.rmtree(d, ignore_errors=True)
         total -= size
         removed.append(d.name)
         print(f"[{now()}] media sweep: cleared {d.name}, {size} bytes, "
               f"{total} of {budget} left")
     if total > budget:
-        # Say it out loud rather than quietly accept it: space has run out and
-        # there is nothing to clear, because everything left is awaiting a
-        # reply. This is about me, not the disk.
+        # Say it out loud rather than quietly accept it: the space has run out
+        # and there is nothing to clear, because everything left is awaiting an
+        # answer. That is about me, not about the disk.
         print(f"[{now()}] media sweep: still {total} > {budget}, "
-              f"the rest awaits a reply — clear the inbox")
+              f"the rest awaits an answer — clear the inbox")
     return removed
 
 
@@ -1782,14 +2203,15 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
     for rid in (item.get("answers") or []):
         req = C.REQUESTS / f"{rid}.json"
         # MARK FIRST, THEN MOVE. Renaming the request into served BEFORE the
-        # 👍 was placed meant a failed ack left the inbox empty while 👀 still
-        # burned on the phone — done in the record, not-done to the human.
-        # Placing the mark first keeps the two in step; the move happens either
-        # way, because a named request IS answered and must leave the inbox.
+        # 👍 was placed meant a failed ack left the inbox empty (nothing for
+        # pending_eyes to surface) while 👀 still burned on the phone — done
+        # in the record, not-done to the human. Placing the mark first keeps
+        # the two in step; the move happens either way, because a named
+        # request IS answered and must leave the inbox.
         if mark_done:
             try:
                 # SPLIT FROM THE LEFT. A group's chat id is NEGATIVE, so the
-                # request id reads "284--1001234567890" — and splitting from the
+                # request id reads "284--5101395964" — and splitting from the
                 # right cut it at the id's own minus sign, giving message id
                 # "284-", which is not a number. The failure was caught and
                 # swallowed, so in groups the eyes simply never came off and
@@ -1799,10 +2221,10 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
                 # first, so the first hyphen is the only safe boundary. A
                 # "verdict-..." id carries no message and still fails int()
                 # below (skipped, as it should). But "reaction-<chat>-<mid>"
-                # DOES carry one — the eye the bridge put on MY message when the
-                # principal reacted to it — so parse mid off the END (rsplit, so
-                # a negative group chat in the middle stays intact) and close
-                # that eye like any other.
+                # DOES carry one — the 👀 the bridge put on MY message when the
+                # principal reacted to it — so parse mid off the END (rsplit,
+                # so a negative group chat in the middle stays intact) and close
+                # that eye like any other (variant 1, curator 2026-08-24).
                 if rid.startswith("reaction-"):
                     chat, mid = rid[len("reaction-"):].rsplit("-", 1)
                 else:
@@ -1842,8 +2264,8 @@ def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
 def outgoing_prefix(pol: dict[str, Any], item: dict[str, Any]) -> str:
     """Which signature this message carries.
 
-    AN EMPTY SIGNATURE IS A CHOICE, NOT AN OMISSION. `or` would silently restore
-    the name: "" is falsy in Python, so a chat configured to speak without a
+    AN EMPTY CAPTION IS A CHOICE, NOT AN OMISSION. `or` would silently restore the
+    name: "" is falsy in Python, so a chat configured to speak without a
     signature would keep signing. Testing for the KEY distinguishes "not
     configured" from "configured to nothing", and that distinction is the whole
     of the setting.
@@ -1919,8 +2341,8 @@ def flush_outbox() -> None:
             # all. Leave it open and say why. ("message" fallback DID reach
             # them, so that still clears.)
             if how == "invalid-emoji" or how.startswith("FAILED"):
-                print(f"[{now()}] MARK DID NOT LAND ({how}) — NOT clearing the "
-                      f"request, eye stays: {item.get('answers')}")
+                print(f"[{now()}] THE MARK DID NOT LAND ({how}) — not closing the "
+                      f"request, the eye stays: {item.get('answers')}")
             else:
                 clear_inbox(item)
         f.unlink(missing_ok=True)
@@ -1965,13 +2387,13 @@ def flush_outbox() -> None:
         try:
             item = json.loads(f.read_text(encoding="utf-8"))
         except Exception as e:
-            # DO NOT SWALLOW SILENTLY, AND DO NOT STORM FOREVER. A malformed
-            # JSON used to stay in outbox and be re-read every second without
-            # end — undelivered to the human and unreturned to the assistant as
-            # broken. But the first failure may just be a half-written file
-            # (write_text = truncate then write), so quarantine only what has
-            # not fixed itself in a few seconds; the write window is
-            # microseconds, 5s is a wide margin.
+            # NEITHER SWALLOW IT IN SILENCE NOR STORM FOR EVER. Broken JSON used
+            # to stay in the outbox and be re-read every second without end — the
+            # answer neither delivered nor returned to the assistant as broken.
+            # But the first misfire may be a half-written file (write_text is
+            # truncate then write), so we quarantine only what has not healed
+            # within a few seconds — the half-write window is microseconds, 5 s
+            # is generous.
             try:
                 stale = time.time() - f.stat().st_mtime > 5
             except OSError:
@@ -1979,22 +2401,23 @@ def flush_outbox() -> None:
             if stale:
                 (C.OUTBOX / "rejected").mkdir(exist_ok=True)
                 f.rename(C.OUTBOX / "rejected" / f.name)
-                print(f"[{now()}] OUTBOX REJECTED — malformed JSON ({e}): "
+                print(f"[{now()}] OUTBOX REJECTED — broken JSON ({e}): "
                       f"{f.name} -> rejected/")
             else:
                 print(f"[{now()}] malformed outbox file {f.name}: {e} "
-                      f"(fresh — waiting, may be a partial write)")
+                      f"(fresh — waiting, it may be a half-write)")
             continue
         chat_id, text = item.get("chat_id"), (item.get("text") or "").strip()
         if not C.allowed(chat_id):
-            # A REAL refusal (chat not in the list) goes to rejected/, or it
-            # would storm the log forever. BUT only if the list actually
-            # loaded: with a broken chats.json, allowed() is falsely False for
-            # everyone, and a blind quarantine would drain the whole outbox.
-            # Empty list = broken/missing config = do not quarantine, wait.
+            # A REAL refusal (chat not on the list) goes to rejected — otherwise
+            # the file hangs and storms the log for ever. BUT only if the list
+            # loaded AT ALL: with a broken chats.json allowed() is falsely False
+            # for everyone, and a blind quarantine would pour the whole outbox
+            # into rejected. An empty list = a broken or missing config = do not
+            # quarantine, wait for the fix.
             if C._chats():
                 (C.OUTBOX / "rejected").mkdir(exist_ok=True)
-                item["_rejected"] = f"chat {chat_id} not in the allowed list"
+                item["_rejected"] = f"chat {chat_id} is not on the allow list"
                 (C.OUTBOX / "rejected" / f.name).write_text(
                     json.dumps(item, ensure_ascii=False, indent=1),
                     encoding="utf-8")
@@ -2003,47 +2426,61 @@ def flush_outbox() -> None:
                       f"{f.name} -> rejected/")
             else:
                 print(f"[{now()}] REFUSED (chats.json empty/broken?): {f.name} "
-                      f"-> {chat_id}; NOT quarantining, waiting for a fix")
+                      f"-> {chat_id}; NOT quarantining, waiting for the config fix")
             continue
-        # A FILE IN THE QUEUE. The ask was "send a file into this chat"; until
-        # v1.3.0 the bridge could only do text, and that was an honest refusal,
-        # not an oversight: it had ACCEPTED files since v1.1.0 but did not send
-        # them. Now both directions work.
+        # A LOUD REFUSAL FOR AN UNRECOGNISED SHAPE. An answer is {text} or
+        # {file, text}. An item with neither (say "path" instead of "file",
+        # "caption" instead of "text") used to fall into silence and the message
+        # was lost unnoticed. Lost is worse than rejected: it goes to
+        # outbox/rejected/ with a reason and a line in the log — not into
+        # nowhere.
+        if not text and not item.get("file"):
+            (C.OUTBOX / "rejected").mkdir(exist_ok=True)
+            item["_rejected"] = ("unrecognised shape: 'text' or 'file' is required "
+                                 "(it is 'file', not 'path'; 'text', not 'caption'). "
+                                 "keys: " + ",".join(sorted(item)))
+            (C.OUTBOX / "rejected" / f.name).write_text(
+                json.dumps(item, ensure_ascii=False, indent=1), encoding="utf-8")
+            f.unlink(missing_ok=True)
+            print(f"[{now()}] OUTBOX REJECTED — unrecognised shape "
+                  f"(keys {sorted(item)}): {f.name} -> rejected/")
+            continue
+        # A FILE IN THE QUEUE. The request was "send the file here into the
+        # chat"; before v1.3.0 the bridge could only do text, and that was an
+        # honest refusal rather than an oversight: it had ACCEPTED files since
+        # v1.1.0 but did not give them back. Now both directions work.
         if item.get("file"):
             fp = Path(item["file"])
-            # A GATE ON THE FILE. Sending a file is not a letter: it goes out
-            # whole, cannot be appended to afterwards, and getting the room
-            # wrong costs more here. So anything a standing rule does not cover
-            # is asked about.
+            # THE GATE ON A FILE. Sending a file is not sending a letter: it
+            # leaves whole, it cannot be amended afterwards, and getting the room
+            # wrong costs more. So everything a standing rule does not cover is
+            # asked about.
             rule = rule_for(chat_id, fp)
             grant = None if rule else grant_for(chat_id, fp)
             if rule is None and grant is None:
                 print(f"[{now()}] FILE NOT SENT: {fp.name} -> {chat_id} "
-                      f"covered by no rule — a proposal is needed")
-                # OUT OF THE QUEUE, NOT RENAMED IN PLACE. The first version left
-                # a refused file in the outbox under a new name — and the next
-                # pass renamed it again, and again, growing the prefix and trying
-                # to send forever. Exactly the same pit already described above
-                # for messages longer than 4096 characters; I fell into it a
-                # second time, in the same file, on the same day.
+                      f"is covered by no rule — a proposal is needed")
+                # OUT OF THE QUEUE, NOT RENAMED IN PLACE. The first version
+                # left a refused file in the outbox under a new name — and the
+                # next pass renamed it again, and again, growing the prefix and
+                # trying to send it for ever. Exactly the pit already described
+                # above for messages longer than 4096 characters; I walked into
+                # it a second time, in the same file, on the same day.
                 C.NEEDS_CONSENT.mkdir(exist_ok=True)
                 dest = C.NEEDS_CONSENT / f.name
                 f.rename(dest)
-                # AND TELL ME, NOT SET IT ASIDE SILENTLY. The first version just
-                # moved the file aside: not a line to the inbox, no way back. It
-                # made a dead end built for safety's sake — and a dead end nobody
-                # knows about is indistinguishable from a loss.
+                # AND TELL ME, RATHER THAN PUT IT ASIDE IN SILENCE. The first
+                # version simply moved the file away: no line in the inbox, no
+                # way back. That made a dead end built for safety's sake — and a
+                # dead end nobody knows about is indistinguishable from a loss.
                 rid = f"needsfile-{dest.stem}"
                 C.REQUESTS.joinpath(f"{rid}.json").write_text(json.dumps({
                     "at": now(), "chat_id": chat_id, "from": "GATE",
                     "from_id": None, "message_id": None,
-                    "text": f"file awaiting a decision: {fp}",
-                    "ask": (f"FILE NOT SENT — no rule.\n"
-                            f"    file:  {fp}\n"
-                            f"    to:    {chat_id}\n"
-                            f"Hang it on a mark with one command:\n"
-                            f"    ./propose.py --batch '{fp}' --to {chat_id} "
-                            f"--why '<why>'"),
+                    "text": T("gate.file_waiting", path=fp),
+                    "ask": T("gate.no_rule", path=fp, chat=chat_id,
+                             command=f"./propose.py --batch {shlex.quote(str(fp))} "
+                                     f"--to {chat_id} --why '<why>'"),
                     "needs_consent_file": str(dest), "path": str(fp),
                     "target_chat": chat_id, "context": []},
                     ensure_ascii=False), encoding="utf-8")
@@ -2051,10 +2488,10 @@ def flush_outbox() -> None:
             r = send_file(chat_id, fp, item.get("text", "")[:1024],
                           as_photo=bool(item.get("as_photo")))
             if r.get("ok"):
-                # A LOG OF WHAT WAS SENT BY RULE. A rule settles the question IN
-                # ADVANCE, so the only check left is AFTERWARDS — and there must
-                # be one, or a standing permission becomes a blind spot. One line
-                # per send, with the rule's number.
+                # THE LOG OF WHAT WENT OUT UNDER A RULE. A rule settles the
+                # question IN ADVANCE, so the only check left is AFTERWARDS — and
+                # it must exist, or a standing permission becomes a blind spot.
+                # One line per send, with the rule's number.
                 who = (rule or grant).get("id")
                 kind = "rule" if rule else "grant"
                 if grant:
@@ -2063,15 +2500,16 @@ def flush_outbox() -> None:
                         "a", encoding="utf-8") as lg:
                     lg.write(f"{now()}\t{who}\t{chat_id}\t"
                              f"{fp}\t{fp.stat().st_size}\n")
-                print(f"[{now()}] file sent by {kind} "
+                print(f"[{now()}] file sent under {kind} "
                       f"{who} -> {chat_id}: {fp.name}, "
                       f"{fp.stat().st_size} bytes")
-                # A FILE IS AN ANSWER TOO, AND THE EYE MUST COME OFF. The text
-                # branch closes the named request via clear_inbox; the file
+                # A FILE IS ALSO AN ANSWER, AND THE EYE MUST GO OUT. The text
+                # branch closes the named request through clear_inbox; the file
                 # branch silently dropped the answers field — the file went out
-                # but the request stayed, 👀 lit, a false "nobody took it" nudge
-                # 20 minutes later. Same "did (file sent) ≠ recorded (request
-                # not closed)" class.
+                # while the request hung, the 👀 stayed lit, twenty minutes later
+                # a false "nobody picked it up" nudge flew, and pending_eyes
+                # poked at that request for ever. The same class of failure:
+                # "did it (the file left) ≠ recorded it (the request is open)".
                 clear_inbox(item, mark_done=True)
                 item["sent_at"] = now()
                 f.rename(C.SENT / f.name)
@@ -2160,15 +2598,15 @@ def flush_outbox() -> None:
                                     "action": prop.get("action"),
                                     "one_line": prop.get("one_line") or text,
                                     "target_chat": prop.get("target_chat"),
-                                    # THE FIELD WAS LOST HERE. The proposal was
-                                    # written by a whitelist of fields, and
-                                    # "rule" was not on it: the rule reached the
+                                    # THE FIELD WAS LOST HERE. A proposal was
+                                    # written by an allow list of fields, and
+                                    # "rule" was not in it: the rule reached the
                                     # message and died before reaching the
-                                    # decision. The mark was placed, the verdict
-                                    # was APPROVED, yet NOTHING reached the
-                                    # journal — and silently, because the writing
-                                    # branch simply never fired. Found on the
-                                    # very first live rule.
+                                    # decision. The mark was set, the verdict was
+                                    # APPROVED, and NOTHING reached the book — in
+                                    # silence, because the writing branch simply
+                                    # never fired. Found on the very first live
+                                    # rule.
                                     "rule": prop.get("rule"),
                                     "batch": prop.get("batch"),
                                     "created": born.isoformat(timespec="seconds"),
@@ -2197,7 +2635,53 @@ def flush_outbox() -> None:
             # reads five messages in the same second anyway.
             time.sleep(0.4)
         else:
-            print(f"[{now()}] NOT sent: {r.get('description')}")
+            # THE REPLY LINK IS DECORATION; THE DELIVERY IS THE POINT.
+            # Measured 2026-08-30: one file, a reply to message 3489 in a group,
+            # sat in the queue from 11:19 and produced ABOUT SEVEN THOUSAND "NOT
+            # sent" lines — Telegram no longer serves that message, while the
+            # queue tried again on every pass. The log was buried so deep that a
+            # genuine breakage drowned in it and the operator concluded the
+            # bridge had died. Noise that masks a breakage costs more than the
+            # breakage.
+            #
+            # So: if it failed because of the link, send THE SAME THING without
+            # it. If it failed outright, count the attempts and after
+            # OUTBOX_TRIES move it to rejected/ with a reason. A number, not a
+            # list of Telegram's "permanent" errors: listing those from memory is
+            # the same guessing.
+            desc = str(r.get("description") or "")
+            if item.get("reply_to") and "replied" in desc:
+                r = call("sendMessage", chat_id=chat_id, text=chunk,
+                         disable_web_page_preview=True)
+                if r.get("ok"):
+                    print(f"[{now()}] SENT WITHOUT A REPLY LINK: {f.name} — "
+                          f"Telegram no longer serves the original message")
+                    item["_reply_dropped"] = desc
+                    clear_inbox(item, mark_done=True)
+                    C.SENT.joinpath(f.name).write_text(
+                        json.dumps(item, ensure_ascii=False), encoding="utf-8")
+                    f.unlink(missing_ok=True)
+                    time.sleep(0.4)
+                    continue
+                desc = str(r.get("description") or desc)
+            tries = int(item.get("_tries", 0)) + 1
+            item["_tries"] = tries
+            if tries >= OUTBOX_TRIES:
+                (C.OUTBOX / "rejected").mkdir(exist_ok=True)
+                item["_rejected"] = f"did not go out in {tries} attempts: {desc}"
+                (C.OUTBOX / "rejected" / f.name).write_text(
+                    json.dumps(item, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+                f.unlink(missing_ok=True)
+                print(f"[{now()}] GAVE UP AFTER {tries} ATTEMPTS -> rejected/: "
+                      f"{f.name} — {desc}")
+            else:
+                f.write_text(json.dumps(item, ensure_ascii=False),
+                             encoding="utf-8")
+                print(f"[{now()}] NOT sent ({tries}/{OUTBOX_TRIES}): {desc}")
+
+
+OUTBOX_TRIES = 5   # send attempts, then rejected/ with a reason
 
 
 def main() -> int:
@@ -2215,7 +2699,6 @@ def main() -> int:
             print("  DRY_RUN: nothing is sent and no reactions are placed.")
         me = call("getMe")
         _ME[0] = (me.get("result") or {}).get("id") or 0
-        _ME_NAME[0] = (me.get("result") or {}).get("username") or ""
         print(f"  bot id {_ME[0] or 'UNKNOWN — replies will not count as addressing'}")
         ready = whisper_ready()
         print(f"  voice: {'transcription available' if ready == 'ok' else 'NO transcription — ' + ready}"
@@ -2231,7 +2714,7 @@ def main() -> int:
     # queue for a minute, and it looked like the assistant was slow when it
     # was the bridge. Receiving and sending are independent tasks; tying them
     # to one loop was the mistake.
-    nonlocal_tick = [0.0, 0.0]
+    nonlocal_tick = [0.0, 0.0, 0.0]
     if not whoami:
         def pump() -> None:
             while True:
@@ -2241,6 +2724,13 @@ def main() -> int:
                     print(f"[{now()}] send failed: {type(e).__name__}: {e}")
                 nonlocal_tick[0] += C.OUTBOX_SCAN
                 nonlocal_tick[1] += C.OUTBOX_SCAN
+                nonlocal_tick[2] += C.OUTBOX_SCAN
+                if nonlocal_tick[2] >= C.MAILWATCH_SCAN:
+                    nonlocal_tick[2] = 0.0
+                    try:
+                        mail_watch()
+                    except Exception as e:
+                        print(f"[{now()}] the mail watch crashed: {type(e).__name__}: {e}")
                 if nonlocal_tick[0] >= C.REMINDER_SCAN:
                     nonlocal_tick[0] = 0.0
                     try:
@@ -2253,12 +2743,12 @@ def main() -> int:
                         sweep_proposals()
                     except Exception as e:
                         print(f"[{now()}] expiry sweep failed: {type(e).__name__}: {e}")
-                    # sweep_old_files WAS WRITTEN AND NEVER ONCE CALLED. Its
-                    # docstring promised that voice notes do not pile up forever;
-                    # the promise held only because the bridge is young and has
-                    # not yet lived thirty days. Found 2026-08-22 while building
-                    # attachment cleanup — looking for one thing, found the one
-                    # next to it.
+                    # sweep_old_files WAS WRITTEN AND NEVER CALLED. Its
+                    # docstring promised that voice would not pile up for ever;
+                    # the promise held only because the bridge was young and had
+                    # not lived thirty days yet. Found 2026-08-22 while building
+                    # the attachment sweep — looking for one thing, finding its
+                    # neighbour.
                     try:
                         nudge_unanswered()
                         pending_eyes()
@@ -2270,12 +2760,11 @@ def main() -> int:
                 time.sleep(C.OUTBOX_SCAN)
         threading.Thread(target=pump, daemon=True).start()
 
-    # THE TAMPER GUARD STANDS BEFORE THE FIRST NETWORK CALL AND BEFORE READING
-    # THE OFFSET. The bridge tends the consent gate — that is, it decides what
-    # counts as permission. Running as who-knows-what code is worse for it than
-    # not running at all. A warning here would not do: it is addressed to a
-    # reader who may not be there. So a refusal, its own return code, and a
-    # durable record.
+    # THE TAMPER WATCH STANDS BEFORE THE FIRST NETWORK CALL AND BEFORE THE
+    # OFFSET IS READ. The bridge serves the consent gate — that is, it decides
+    # what counts as permission. Running as unknown code is worse for it than not
+    # running. A warning will not do here: it is addressed to a reader who may
+    # not be there. Hence a refusal, its own exit code and a durable record.
     if not whoami and not C.DRY_RUN:
         try:
             import drift
@@ -2283,19 +2772,29 @@ def main() -> int:
             if not ok:
                 with drift.REFUSALS.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(detail, ensure_ascii=False) + "\n")
-                print(f"[{now()}] REFUSED ON TAMPER: {detail.get('reason')} — "
-                      f"not starting up. Details in {drift.REFUSALS.name}; "
-                      f"if the state is correct, approve: ./drift.py --approve")
+                print(f"[{now()}] TAMPER REFUSAL: {detail.get('reason')} — "
+                      f"not starting. Details in {drift.REFUSALS.name}; "
+                      f"if the state is right, approve it: ./drift.py --approve")
                 return drift.EXIT_DRIFT
             print(f"  no tampering: {detail['files']} files match")
         except Exception as e:
-            # A broken guard is also a refusal. A guard that lets things through
-            # when it breaks only guards in fair weather.
-            print(f"[{now()}] TAMPER GUARD BROKEN: {type(e).__name__}: {e} — "
-                  f"not starting up")
+            # A broken watch is also a refusal. A watch that lets things
+            # through when it is itself broken guards only in fair weather.
+            print(f"[{now()}] THE TAMPER WATCH IS BROKEN: {type(e).__name__}: "
+                  f"{e} — not starting")
             return 91
 
-    offset = int(C.OFFSET.read_text()) if C.OFFSET.exists() else 0
+    # AN EMPTY OR BROKEN offset IS NO REASON NOT TO START. It used to be written
+    # non-atomically: an interruption (power, OOM, a full disk) between the
+    # truncate and the write left zero bytes, and the start died on int('') — so
+    # a service with Restart=always stayed down FOR EVER, until a human came.
+    # Found by an audit on 2026-08-25. A broken offset now reads as 0: losing a
+    # few old messages is not frightening, failing to start is.
+    try:
+        offset = int(C.OFFSET.read_text().strip()) if C.OFFSET.exists() else 0
+    except (ValueError, OSError) as e:
+        print(f"[{now()}] the offset is broken ({type(e).__name__}) — starting from zero")
+        offset = 0
     while True:
         r = call("getUpdates", _timeout=C.POLL_TIMEOUT + 15, offset=offset,
                  timeout=C.POLL_TIMEOUT,
@@ -2316,7 +2815,7 @@ def main() -> int:
             except Exception as e:            # one bad message must not kill the bridge
                 print(f"[{now()}] update {upd.get('update_id')} failed: "
                       f"{type(e).__name__}: {e}")
-        C.OFFSET.write_text(str(offset))
+        _atomic_write(C.OFFSET, str(offset))   # tmp + replace, as for grants and rules
         time.sleep(0.2)
 
 

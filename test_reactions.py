@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Reaction guard: an invalid emoji (✅) must be rejected, not turned into a
-message. Learned the hard way on 2026-08-22."""
+"""The reaction guard: an invalid emoji (✅) must be refused rather than fall
+through into a message. Learned the painful way on 2026-08-22."""
 import config as C
 
 def run():
     ok = True
-    ok &= "✅" not in C.VALID_REACTIONS          # the one we got burned on
-    ok &= "👍" in C.VALID_REACTIONS              # safe "done" marker
+    ok &= "✅" not in C.VALID_REACTIONS          # the one we were burned by
+    ok &= "👍" in C.VALID_REACTIONS              # the safe "done" mark
     ok &= C.ACK_EMOJI in C.VALID_REACTIONS       # 👀 itself must be valid
     for bad in ("✅", "❌", "✔", "🟢", "🐝"):
         ok &= bad not in C.VALID_REACTIONS

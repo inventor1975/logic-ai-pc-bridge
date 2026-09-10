@@ -36,15 +36,29 @@ def main() -> int:
             d = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             continue
-        age = (datetime.now(timezone.utc)
-               - datetime.fromisoformat(d["at"])).total_seconds() / 60
-        rows.append((age, f.stem, d.get("chat_id"), (d.get("ask") or "")[:56]))
+        # A real request carries "at"; the bridge's own synthetic files
+        # (control-*, pending-eyes-*) do not. d["at"] on those used to bring
+        # down the WHOLE report, blinding the watch exactly when something was
+        # waiting in the queue.
+        at = d.get("at")
+        try:
+            age = ((datetime.now(timezone.utc) - datetime.fromisoformat(at))
+                   .total_seconds() / 60) if at else None
+        except Exception:
+            age = None
+        name = f.stem
+        kind = ("eyes" if name.startswith("pending-eyes")
+                else "control" if name.startswith("control-") else "request")
+        summary = (d.get("ask") or d.get("text") or "")[:56].replace("\n", " ")
+        rows.append((age, kind, name, d.get("chat_id"), summary))
     if not rows:
         print("nothing owed — the inbox is empty.")
         return 0
     print(f"{len(rows)} awaiting an answer (oldest first):\n")
-    for age, rid, chat, ask in sorted(rows, reverse=True):
-        print(f"  {age:6.0f} min  {rid:32} chat {chat}\n              {ask}")
+    for age, kind, rid, chat, summary in sorted(
+            rows, key=lambda r: (r[0] is not None, r[0] or 0.0), reverse=True):
+        age_s = f"{age:6.0f} min" if age is not None else "   ?   min"
+        print(f"  {age_s}  [{kind}] {rid:30} chat {chat}\n              {summary}")
     print("\nTo clear one, put \"answers\": [\"<id>\"] in the outbox file that replies to it,")
     print("or close it without replying:  ./pending.py --close <id> \"why\" [emoji]")
     return 0
@@ -78,6 +92,15 @@ def close(rid: str, why: str, emoji: str = "👍") -> int:
     # file and left the mark, which made the record and the picture disagree —
     # exactly the split this inbox exists to prevent, reintroduced one level
     # down.
+    # Not every request has a message to take the eye off: the self-check about
+    # open eyes arrives with no chat_id and no message_id. This used to raise
+    # KeyError AFTER the unlink — the request was closed, the closing was never
+    # printed, and on screen it looked as if the command had failed.
+    if d.get("message_id") is None or d.get("chat_id") is None:
+        print(f"closed without answering: {rid}\n  reason: {why}\n"
+              f"  no mark: a request without a message (self-check)")
+        return 0
+
     C.OUTBOX.mkdir(exist_ok=True)
     C.OUTBOX.joinpath(f"{d['message_id']}-{d['chat_id']}.react.json").write_text(
         json.dumps({"chat_id": d["chat_id"], "message_id": d["message_id"],

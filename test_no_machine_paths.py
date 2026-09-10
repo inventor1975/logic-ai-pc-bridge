@@ -33,8 +33,18 @@ def check(name, cond, why=""):
 def scan(text):
     return [m.group(0) for m in MACHINE.finditer(text)]
 
-files = sorted(p for p in HERE.glob("*.py")) + sorted(HERE.glob("*.md")) \
-        + sorted(HERE.glob("*.json")) + sorted(HERE.glob("*.service"))
+# WHAT THE PACKAGE SHIPS, NOT WHAT LIES IN THE DIRECTORY. Walking the directory
+# made this stand red in any working tree that holds a local settings.json — which
+# is gitignored and never shipped. The question is about the package, and the
+# package is what git tracks. Outside a git tree the directory walk remains.
+import subprocess
+_r = subprocess.run(["git", "ls-files", "-z"], cwd=HERE, capture_output=True)
+if _r.returncode == 0 and _r.stdout:
+    files = sorted(HERE / n.decode("utf-8") for n in _r.stdout.split(b"\0") if n)
+    files = [f for f in files if f.is_file() and f.suffix in (".py", ".md", ".json", ".service", ".example")]
+else:
+    files = sorted(p for p in HERE.glob("*.py")) + sorted(HERE.glob("*.md")) \
+            + sorted(HERE.glob("*.json")) + sorted(HERE.glob("*.service"))
 hits = []
 for f in files:
     if f.name == pathlib.Path(__file__).name:
@@ -46,7 +56,7 @@ check(f"no machine-specific absolute path in {len(files)} shipped files",
       not hits, "; ".join(hits[:6]))
 
 check("CONTROL: the scanner really detects one when it is there",
-      scan("SELFCHECK = ['python3', '/home/someone/tool.py']") != [],
+      scan("SELFCHECK = ['python3', '/home/someone/tool.py']") != [],  # guard-fixture: the path this stand must catch
       "the scan matches nothing at all — a green here would mean nothing")
 check("CONTROL: an ordinary system path is NOT flagged",
       scan("/usr/bin/python3 and /tmp/work and /etc/hosts") == [],

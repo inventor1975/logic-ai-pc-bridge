@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Hang a proposal on the consent gate.
 
-    ./propose.py "email Sam the signed contract"
+    ./propose.py "send Arkadiy the letter about the v05.2 acceptance"
 
 The assistant does nothing outward on its own. It hangs ONE LINE, the
 principal marks it 👍 or 👎, and only the mark is an order.
@@ -47,18 +47,18 @@ def _principal_chat() -> int:
 
 
 def _rule_proposal(argv: list[str], target: int | None) -> int:
-    """Propose a STANDING RULE for sending files, not a single send.
+    """Propose a STANDING RULE for sending files, rather than one send.
 
-        ./propose.py --file-rule ~/Dropbox/Outbox --to -100200300 \
-                     --glob "*.md" --why "approved documents for the review room"
+        ./propose.py --file-rule ~/Dropbox/.../Inbox-Arkadiy --to -1001234567890 \
+                     --glob "*.md" --why "finished documents for the project"
 
-    Approval moves from the instance to the CLASS: the principal marks once,
-    and from then on everything from this folder to this room goes without a
-    question. Everything else is still asked for one item at a time.
+    The confirmation moves from the instance to the CLASS: the operator marks
+    it once, and from then on everything from that folder to that room goes out
+    without a question. Everything else is still asked about one file at a time.
 
-    A proposal only PROPOSES. The rule is written to the log by the bridge and
-    only on a mark, together with the numeric id of whoever marked it. The
-    assistant never writes to the log.
+    A proposal only PROPOSES. The rule is written into the book by the bridge
+    and only on a mark, together with the numeric id of whoever marked it. The
+    assistant never writes the book.
     """
     i = argv.index("--file-rule")
     try:
@@ -81,63 +81,55 @@ def _rule_proposal(argv: list[str], target: int | None) -> int:
         print(f"no such directory: {directory}"); return 2
 
     room = C.policy(target).get("_") or target
-    line = (f"ALLOW sending files WITHOUT asking each time:\n"
-            f"    from:    {directory}\n"
-            f"    pattern: {glob}\n"
-            f"    to:      {room}\n"
-            f"    why:     {why or 'not said'}\n"
-            f"    until:   {until or 'no expiry'}\n"
-            f"This is a rule for a CLASS of sends, not for one file. "
-            f"Anything that does not match it, I will still ask about.")
+    line = C.T("propose.rule_body", directory=directory, glob=glob, room=room,
+               why=why or C.T("propose.not_said"),
+               until=until or C.T("propose.no_deadline"))
     C.OUTBOX.mkdir(exist_ok=True)
     name = f"propose-rule-{int(time.time())}.json"
     tag = _tag(name + str(target))
     C.OUTBOX.joinpath(name).write_text(json.dumps({
         "chat_id": _principal_chat(),
-        "text": (f"[{tag}] I PROPOSE A RULE:\n\n{line}\n\n"
-                 f"👍 — allow. 👎 — no. Without a mark nothing is allowed; "
-                 f"the proposal expires on its own after {C.PROPOSAL_TTL_HOURS}h."),
+        "text": C.T("propose.rule_offer", tag=tag, body=line,
+                    hours=C.PROPOSAL_TTL_HOURS),
         "proposal": {"action": f"standing rule: {directory} -> {room}",
                      "one_line": line, "target_chat": target,
                      "rule": {"chat_id": target, "dir": str(directory),
                               "glob": glob, "expires_at": until,
                               "why": why}},
     }, ensure_ascii=False), encoding="utf-8")
-    print(f"hung rule {tag}: {name}")
+    print(f"rule queued {tag}: {name}")
     return 0
 
 
 def _tag(seed: str) -> str:
-    """A short proposal tag, VISIBLE to the human.
+    """A short proposal tag that the human can SEE.
 
-    Telegram assigns the message number itself and DOES NOT SHOW it to the
-    user: it is in the API and in my log, and it is not on the screen.
-    Referring to it in conversation means naming something the other person
-    cannot see — exactly what the principal caught me on 2026-08-22. So the tag
-    is placed IN THE TEXT of the proposal: what I name and what he sees are one
-    and the same string.
+    Telegram assigns the message id itself and does NOT show it to the user: it
+    exists in the API and in my log, and not on the screen. Referring to it in
+    conversation means naming something the other person cannot see — exactly
+    what the operator caught on 2026-08-22. So the tag goes INTO THE TEXT of the
+    proposal: what I name and what they see are the same string.
     """
-    return "П-" + hashlib.sha256(seed.encode()).hexdigest()[:4].upper()
+    return "P-" + hashlib.sha256(seed.encode()).hexdigest()[:4].upper()
 
 
 def _batch_proposal(argv: list[str], target: int | None) -> int:
-    """Hang a BATCH: one mark — one send to one room.
+    """Queue a BATCH: one mark — one delivery into one room.
 
         ./propose.py --batch a.md b.pdf c.png --to -1001234567890 [--why ...]
 
-    Three conditions, each of which closes its own hole:
+    Three conditions, each closing its own hole:
 
-    ONE recipient. Mixing rooms in a single batch is forbidden — that is
-    exactly where the mistake hides: four files to the right place, one to the
-    wrong one, and it will show up at the recipient's end, not at ours.
+    ONE recipient. Mixing rooms inside one batch is forbidden — that is exactly
+    where the mistake hides: four files to the right place, one to the wrong
+    one, and it will be the recipient who notices, not us.
 
-    EVERY file is named: name, size, fingerprint — right in the text of the
-    proposal. The mark covers WHAT WAS SEEN, not "the files he pulled together
-    over there".
+    EVERY file is named: name, size, digest — right in the text of the proposal.
+    The mark covers WHAT WAS SEEN, not "those files he gathered over there".
 
-    A CEILING at C.BATCH_MAX. A list that cannot be read with the eyes is a
-    rubber stamp, whatever you call it. The answer to "many files" is not a
-    bigger batch but a rule for the folder.
+    A CEILING at C.BATCH_MAX. A list too long to read with your eyes is a rubber
+    stamp, whatever it is called. The answer to "many files" is not a bigger
+    batch but a rule on the folder.
     """
     i = argv.index("--batch")
     del argv[i]
@@ -148,11 +140,11 @@ def _batch_proposal(argv: list[str], target: int | None) -> int:
     if target is None:
         print("a batch needs a room: --to <chat_id>"); return 2
     if not paths:
-        print("batch is empty"); return 2
+        print("the batch is empty"); return 2
     if len(paths) > C.BATCH_MAX:
-        print(f"batch has {len(paths)} files, ceiling is {C.BATCH_MAX}. "
-              f"A list that cannot be read with the eyes is a rubber stamp. "
-              f"For a steady stream, set up a rule: --file-rule <folder>")
+        print(f"{len(paths)} files in the batch, the ceiling is {C.BATCH_MAX}. "
+              f"A list too long to read with your eyes is a rubber stamp. "
+              f"For a stream of files make a rule: --file-rule <folder>")
         return 2
 
     files, lines = [], []
@@ -163,26 +155,22 @@ def _batch_proposal(argv: list[str], target: int | None) -> int:
         d = hashlib.sha256(raw).hexdigest()
         files.append({"name": p_.name, "path": str(p_.resolve()),
                       "bytes": len(raw), "sha256": d})
-        lines.append(f"    {p_.name}  —  {len(raw)} bytes  —  {d[:16]}…")
+        lines.append(f"    {p_.name}  —  {len(raw)} B  —  {d[:16]}…")
 
     room = C.policy(target).get("_") or target
-    line = (f"SEND AS A BATCH to: {room}\n"
-            f"    why: {why or 'not said'}\n\n" + "\n".join(lines) +
-            f"\n\nWhat gets approved is EXACTLY THIS: the fingerprints are "
-            f"recorded, swapping a file after the mark will not pass. The "
-            f"approval is ONE-TIME.")
+    line = C.T("propose.batch_body", room=room,
+               why=why or C.T("propose.not_said"), files="\n".join(lines))
     C.OUTBOX.mkdir(exist_ok=True)
     name = f"propose-batch-{int(time.time())}.json"
     tag = _tag(name + str(target))
     C.OUTBOX.joinpath(name).write_text(json.dumps({
         "chat_id": _principal_chat(),
-        "text": (f"[{tag}] I PROPOSE A BATCH ({len(files)}):\n\n{line}\n\n"
-                 f"👍 — send. 👎 — no. Without a mark nothing goes out."),
+        "text": C.T("propose.batch_offer", tag=tag, count=len(files), body=line),
         "proposal": {"action": f"batch of {len(files)} files -> {room}",
                      "one_line": line, "target_chat": target,
                      "batch": {"chat_id": target, "files": files, "why": why}},
     }, ensure_ascii=False), encoding="utf-8")
-    print(f"hung batch {tag}: {name} — {len(files)} files")
+    print(f"batch queued {tag}: {name} — {len(files)} files")
     return 0
 
 
