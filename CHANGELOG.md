@@ -2,6 +2,24 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.1.0 — 2026-09-10
+
+A new capability, nothing incompatible: the request format, the settings and
+the protocol are unchanged.
+
+- **`say.py` reports what happened, not only "queued".** It now waits (45 s by
+  default, `--wait SECONDS`) for the bridge to take the message and says which
+  it was: *sent* (Telegram accepted it — accepted is not read), *rejected* (with
+  the bridge's reason), *not sent yet* (Telegram refused, the bridge keeps
+  trying) or *still queued* — which cannot tell "not taken" from "being sent to
+  a slow Telegram" until the bridge marks what it has claimed. Exit codes
+  0 / 1 / 2. A file of the same name left in `sent/` by an earlier message does
+  not count. `--no-wait` keeps the old behaviour — scripts that relied on an
+  immediate exit 0 should pass it. Stand: `test_say_wait.py`, with a control
+  checked against a deliberately broken `say.py`.
+
+Stand: 27 stands, `test_other_bot` still skipped with its reason.
+
 ## v2.0.0 — 2026-09-10
 
 **Incompatible.** By the rule in VERSIONS.md: the request format, the settings and
