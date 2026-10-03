@@ -149,6 +149,31 @@ def main(argv: list[str]) -> int:
         return 1
     rec = {"chat_id": chat, "text": text, "done_emoji": a.emoji}
     ans = [x.strip() for x in a.answers.split(",") if x.strip()]
+    # AN ANSWER MUST NAME A REQUEST THAT EXISTS. The bridge closes an eye by
+    # opening requests/<id>.json; an id that names no file closes nothing and
+    # nothing says so. Measured 2026-10-03: --answers 8726 (the message id
+    # alone, the request is 8726-<chat>) went out, this script printed "closes
+    # 1 request(s)", and the eye stayed until a watcher raised it. The short
+    # form is what a person naturally types, so it is completed from --chat;
+    # anything still unknown is refused HERE, before Telegram is touched.
+    fixed, unknown = [], []
+    for rid in ans:
+        if (C.REQUESTS / f"{rid}.json").exists():
+            fixed.append(rid)
+        elif rid.isdigit() and (C.REQUESTS / f"{rid}-{chat}.json").exists():
+            fixed.append(f"{rid}-{chat}")
+        elif (C.SERVED / f"{rid}.json").exists() or \
+                (rid.isdigit() and (C.SERVED / f"{rid}-{chat}.json").exists()):
+            fixed.append(rid if (C.SERVED / f"{rid}.json").exists() else f"{rid}-{chat}")
+            print(f"  note: {fixed[-1]} was already answered (it is in served/)")
+        else:
+            unknown.append(rid)
+    if unknown:
+        print(f"REFUSED: --answers names no request: {', '.join(unknown)}.\n"
+              f"  A request id is <message id>-<chat id>, e.g. 8726-{chat}; the open\n"
+              f"  ones are listed by ./pending.py. Nothing was sent.")
+        return 1
+    ans = fixed
     if ans:
         rec["answers"] = ans
     name = a.name or pathlib.Path(a.file).stem

@@ -2,6 +2,28 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.1.2 — 2026-10-03
+
+A repair with one behaviour change: an `--answers` id that names no request is
+now refused instead of queued.
+
+- **`--answers` must name a request that exists.** The bridge closes an eye by
+  opening `requests/<id>.json`, where the id is `<message id>-<chat id>` (a
+  group's chat id is negative: `284--100…`); an answered request moves to
+  `served/`. Given the message id alone (`--answers 8726`), `say.py` queued the
+  reply, printed "closes 1 request(s)", and the eye stayed. Now an id of digits
+  only is completed with the message's chat (`--chat`, or the default chat); an
+  id found in `served/` is sent as usual with a note that it was already
+  answered; an id found in neither is refused, and if any id in the list is
+  refused the whole message is not sent. So "closes N request(s)" now counts
+  only requests that exist.
+- **New stand `test_say_answers`.** Run on the dev tree, it was red before the
+  fix and green after; its control case checks that a request of a different
+  chat is not taken for the short id.
+
+Stand: 28 stands including the new one, `test_other_bot` still skipped with its
+reason.
+
 ## v2.1.1 — 2026-09-10
 
 A repair, no new capability.
