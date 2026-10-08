@@ -91,6 +91,14 @@ def run():
     due()
     ok &= len(log) == 1 and (sent / "r3.json").exists()
 
+    # 5. AND IT CARRIES ITS RECEIPT. A retired file used to prove only that
+    #    this code moved it: the id Telegram returned was dropped, so delivery
+    #    could be read from the code path and nowhere else. Checked here
+    #    because the four above stayed green while the receipt was missing —
+    #    a stand that cannot fail certifies nothing.
+    r3 = json.loads((sent / "r3.json").read_text(encoding="utf-8"))
+    ok &= r3.get("sent_message_id") is not None and bool(r3.get("sent_at"))
+
     print("test_reminders:", "OK" if ok else "FAIL")
     return 0 if ok else 1
 

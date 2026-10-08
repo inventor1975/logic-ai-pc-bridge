@@ -47,15 +47,19 @@
   "_10_handlers": "External programs the bridge may call, one per command. This is how an installation adds its own features WITHOUT touching the product: the bridge sends one JSON object on stdin (command, arg, chat_id, chat_type, from, message_id) and expects one JSON object on stdout ({text, files, caption}). Shape: {\"command\": \"/notes\", \"run\": [\"python3\", \"~/tools/notes.py\"], \"help\": \"search my notes\", \"where\": \"principal_private\", \"timeout_seconds\": 60}. Use \"pattern\" instead of \"command\" for a family, e.g. \"^/f([1-9])$\" — its groups reach the program. WHERE IS DEFAULT-DENY: without it a handler runs only in the principal's private chat, because an extension usually reaches private material.",
   "handlers": [],
 
-  "_11_mail_watch": "Optional: watch a shared folder (Dropbox, Syncthing) and announce what appears or disappears. Remove this block entirely if you do not need it. folder_rooms routes a folder event whose name contains match into its own chat instead of the general one; label is the header of the notification.",
+  "_11_mail_watch": "Optional: watch a shared folder (Dropbox, Syncthing) and announce what appears or disappears. Remove this block entirely if you do not need it. folder_rooms routes a folder event whose name contains match into its own chat instead of the general one; label is the header of the notification. root, optional, is the shared folder itself: what appears, changes or disappears BESIDE the two sides is announced too, and copied into the mirror.",
   "mail_watch": {
     "inbox": "~/Exchange/Inbox-mine",
     "outbox": "~/Exchange/Inbox-theirs",
+    "root": "~/Exchange",
     "mirror": "~/Exchange-mirror",
     "scan_seconds": 60,
     "label": "MAIL",
     "folder_rooms": [
       {"match": "PROJECT-X", "chat_id": -1001234567890, "name": "Project X"}
     ]
-  }
+  },
+
+  "_12_request_hooks": "External programs the bridge TELLS that a request appeared in requests/ — to ring a bell, wake a session, write a log. Unlike a handler it owns nothing and never speaks in the chat. The bridge lists requests/ once a second and runs each hook with one JSON object on stdin: {event: new_requests | bridge_started, requests: [{name, chat_id, file}], bridge}. Output is ignored; a failure is logged and the request stays in the queue. Shape: {\"run\": [\"touch\", \"~/bridge/.doorbell\"], \"timeout_seconds\": 10}.",
+  "on_request": []
 }

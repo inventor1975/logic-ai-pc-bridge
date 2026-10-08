@@ -2,6 +2,174 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.2.0 — 2026-10-08
+
+New capabilities collected in the workshop since 2026-09-21 (the zone of each
+operator, request hooks, `queue_watch` modes, `say.py --attach`, the mail watch
+telling a superseded or archived file from a gone one) and one repair (a failure
+after delivery resent the message every second). The parts below are dated by
+when each was done; v2.1.2 (2026-10-03) was a separate repair released from the
+public tree and is listed after them.
+
+### 2026-10-08
+
+A bookkeeping failure after delivery no longer resends the message.
+
+- **`clear_inbox` never raises.** An outbox item named its answers as integers
+  (`[8978, 8980]`); `rid.startswith()` raised AFTER `sendMessage` had
+  succeeded, `pump()` swallowed it, the file stayed in the outbox and went out
+  again every second — 46 duplicate copies in a group. Ids are now coerced to
+  `str`, and any failure past delivery is logged, never retried.
+- **`answers` is checked BEFORE sending**: it must be a list of non-empty
+  request-id strings, or the item goes to `outbox/rejected/` with the reason.
+  Stand: `test_eyes.py` (+3 checks, 16/16).
+
+### 2026-10-01
+
+Two operators watch each other.
+
+- **`queue_watch.py --watch-peer`** also calls about a request OUTSIDE the
+  watch's zone once the bridge has marked it `nudged` (nobody picked it up) and
+  it is still waiting. Measured 2026-09-30: a room request waited seven hours;
+  the bridge said in the chat after twenty minutes that nobody took it, but that
+  line woke no session — the room operator had no watch running, the private
+  one did. The signal is the bridge's own mark; no second clock is kept. The
+  peer call carries its own name (`peer:<request>`), so neither zone's memory of
+  what it has seen is touched. Limit: if neither session runs a watch, nobody is
+  woken. Mail calls (`mailwatch-*`) are never nudged by the bridge — they carry
+  no chat — so for them the age decides, read as the bridge reads it for a
+  nudge: the file's time against `NUDGE_AFTER_MIN`. Measured the same night:
+  twelve mail calls waited from 18:26 to 08:14. New messages
+  `watch.peer_missed` and `watch.peer_mail_waiting` in all seven locales.
+  Stand: `test_queue_watch_modes.py` (+7 checks, 23/23).
+
+### 2026-09-27
+
+A file goes out through the same door as a message.
+
+- **`say.py --attach PATH`** sends a file, the text becoming its caption. Until
+  now a file could be sent only by writing its JSON into the outbox by hand,
+  which skipped the zone gate, the author stamp and the wait. Refused before
+  queueing: a missing file, a caption over Telegram's 1024 characters, and a
+  file no standing rule covers — the bridge's own `rule_for` decides (imported,
+  not copied). A file the bridge parks for consent is reported as NOT SENT.
+  Stand: `test_say_attach.py`.
+
+### 2026-09-24
+
+The mail watch sees the whole shared folder and stops hiding unread mail.
+
+- **An unanswered mail call stays in the queue.** When a newer letter arrived,
+  the previous call was moved to served/ "or mail notes pile up" — but the new
+  call lists only what is new, so an unread letter left the queue with nobody
+  having read it. With a watcher that wakes once per call and is away while it
+  handles one, that gap became routine. A pile of unanswered mail is now a fact
+  to be seen.
+
+- **The root of the shared folder is watched (`mail_watch.root`, optional).** A
+  letter placed beside the two sides, at the top of the shared folder, was seen
+  by no one for 18 hours. What appears, changes or disappears there is now
+  called, worded with the existing locale keys under the root's own name; the
+  two sides are pruned from the walk, not filtered, so nothing is reported
+  twice. A state from before the root was watched re-signs the root in silence
+  and leaves the two sides' own events intact.
+
+- **The root goes into the mirror too**, at the mirror's top level beside the
+  two sides, without `--delete` and without hidden names. A mirror lying inside
+  the root is refused aloud rather than copied into itself.
+
+Stand: 31 stands green; `test_mail_watch` rewritten around a real shared-folder
+root (13 cases). Its old case D pinned the behaviour this release removes and
+now pins the opposite; six mutations each turn the stand red.
+
+### 2026-09-23
+
+A waiting session is now woken by the bridge, not by a watcher it had to keep
+alive itself — and the folder is watched in one place instead of two.
+
+- **Request hooks (`on_request`) — the second extension point.** A handler
+  answers a command and owns the message; a request hook owns nothing: it is
+  TOLD that a request appeared in requests/ and may ring a bell, wake a
+  session or write a log, but never speaks in the chat. One thread lists
+  requests/ once a second and tells the hooks about every name it has not
+  seen, whoever wrote it — requests are written from eight places, and a hook
+  called from each would miss the ninth. A failed hook loses the ring, never
+  the request. The thread starts after the tamper watch, so a bridge that
+  refuses to run never rings "started".
+
+- **`queue_watch.py --until-called`, `--doorbell`, `--mail`.** The host now
+  expires monitors after thirty minutes, and every expiry woke the session
+  for nothing. With `--until-called` the watch is a plain background command
+  that ENDS at the first call (or problem), having written its memory first,
+  so the session is woken exactly once per call. `--doorbell <file>` waits for
+  the bridge's bell instead of sleeping blind, and takes its mark BEFORE the
+  poll — a ring during the poll is not counted as heard; the pause stays as
+  the fallback. `--mail` is the other half of `--no-mail`: the folder's
+  requests carry no chat and fell to the private session, so an installation
+  whose folder belongs to the room operator ran a second watcher of its own.
+  Both flags at once are refused aloud.
+
+- **The mail watch sees a change under the same name.** It compared names
+  only, so a document sent again under its old name read as nothing. The
+  incoming side is signed by size and mtime, and a change is called — as a
+  change, in all seven locales. A state from before signatures existed is
+  re-signed in silence rather than calling every file changed.
+
+Stand: 31 stands green — `test_request_hooks` (21 checks) and
+`test_queue_watch_modes` (16) are new, `test_mail_watch` gained three cases.
+Each new check was run against a mutation that must turn it red; one did not
+at first (a bell mark moved after the poll left the stand green), and the
+stand now pins it.
+
+### 2026-09-21
+
+Two capabilities that had grown only where the bridge RUNS, brought back into
+the product, plus one new guard against a failure both operators hit.
+
+- **The queue report names whose row it is.** Two operators split the queue
+  with `queue_watch.py --only/--except`, and that split decided who was WOKEN
+  but never who was LISTED: `pending.py` printed the whole queue with no owner
+  on any row. One operator read four rows as four duties, answered three chats
+  belonging to the other, and stated that side's work as not started while it
+  was being delivered — one of those statements was false at the instant of
+  sending, by twenty-two seconds. A row outside the reader's zone is now
+  marked. Declared per OPERATOR with `--zone only|except <chat id>`, written to
+  `.zone-<pid>` of the session that owns the invocation and stamped with its
+  start time, so a reused pid cannot inherit a dead session's zone. The first
+  version kept one `.zone` beside the script — one path for a tree two
+  operators share — and it told the second operator the exact inverse of the
+  truth. A wrong label is worse than none, because a label is read rather than
+  re-verified. NO FILE, NO CHANGE: without one, every row is unmarked exactly
+  as before, and anything malformed answers "no zone" rather than guessing.
+
+- **`--no-mail`, and the notice that outlived it.** An operator told not to
+  watch the correspondent's folder was still woken by the OPEN-EYES notice that
+  merely LISTED those eyes. A flag that stops at half the path is a flag that
+  is not in force. The notice is now filtered on the same ground, and its
+  sibling case — no listed eye resolvable at all — falls to the general rule
+  instead of waking both operators.
+
+- **Truncation is named.** The wake-up line stopped at 200 characters in
+  silence, so a cut message looked exactly like a whole one, and four answers
+  were built on reconstructed endings while the full text sat one command away.
+  The cap is 2000 and the tail is now announced with where to read the rest.
+
+- **The queue report became a gate.** Marking a row as somebody else's is a
+  label, and a label is read rather than obeyed; the same evening proved that
+  a written rule holds only while the reader is careful. `say.py` now asks,
+  BEFORE queueing, whether this operator may write to this chat, and refuses
+  if not. Three properties carry it and each is load-bearing in a different
+  direction: it cannot close the channel to the principal, whose chat is
+  inside the zone of the operator who holds it; no declared zone means no
+  gate, since refusing on an undeclared zone would be guessing an authority;
+  and an unreadable guard never refuses, because a guard that fails closed on
+  its own malfunction takes the channel with it.
+
+Stand: 29 stands green, `test_zone` with 20 checks and `test_gate_zone` with
+10. The gate stand exercises the real `say.py` rather than a copy — a gate
+proved on a copy is not proved — and takes back anything it left in the queue,
+then checks that it did.
+
 ## v2.1.2 — 2026-10-03
 
 A repair with one behaviour change: an `--answers` id that names no request is

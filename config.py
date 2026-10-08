@@ -436,6 +436,12 @@ def _mw_path(key: str):
 MAILWATCH_IN = _mw_path("inbox")        # the OTHER side writes here, we read
 MAILWATCH_OUT = _mw_path("outbox")      # WE write here, they read
 MAILWATCH_MIRROR = _mw_path("mirror")   # a copy outside the cloud folder and git
+# THE SHARED FOLDER ITSELF, not only its two sides. A letter the correspondent
+# placed BESIDE the two sides, at the top of the shared folder, was seen by no
+# one for 18 hours: the watch looked into the inbox and the outbox and nowhere
+# else, and the mirror did not copy it either. Optional; with no key the watch
+# behaves exactly as before.
+MAILWATCH_ROOT = _mw_path("root")
 MAILWATCH_SCAN = float(_MW.get("scan_seconds", 60.0))    # once a minute
 # BINDING A FOLDER TO A ROOM. A correspondent, 2026-09-01: events of ONE topic
 # falling into the shared room were breaking their working channel. An empty
@@ -634,6 +640,28 @@ for _h in (_S.get("handlers") or []):
         "where": _where,
         "help": _h.get("help", ""),
         "timeout": float(_h.get("timeout_seconds", 60)),
+    })
+
+# --------------------------------------------------------------------------
+# REQUEST HOOKS — the second extension point
+# --------------------------------------------------------------------------
+# A handler ANSWERS a command and owns the message. A request hook owns nothing:
+# it is TOLD that a request has appeared in requests/, and may do what it likes
+# about that — ring a bell, wake a session, write a log — except talk in the
+# chat. The bridge sends nothing on its behalf and never waits on it.
+#
+#   "on_request": [
+#     {"run": ["touch", "~/bridge/.doorbell"], "timeout_seconds": 10}
+#   ]
+REQUEST_HOOKS = []
+for _h in (_S.get("on_request") or []):
+    _run = _h.get("run") if isinstance(_h, dict) else None
+    if not _run:
+        print(f"WARNING: on_request entry without run, skipped: {_h!r}")
+        continue
+    REQUEST_HOOKS.append({
+        "run": [str(Path(_a).expanduser()) if "/" in str(_a) else str(_a) for _a in _run],
+        "timeout": float(_h.get("timeout_seconds", 10)),
     })
 
 VOICE = ROOT / "voice"            # downloaded audio, kept next to its transcript

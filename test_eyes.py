@@ -143,6 +143,42 @@ def run():
         B.flush_outbox()
         check("D-storm: fresh broken JSON stays (it may be a half-write)",
               (C.OUTBOX / "fresh.json").exists())
+        fresh.unlink()
+
+        # --- 10. 2026-10-08 resend loop: integer answers ---
+        # (a) clear_inbox never raises on them
+        try:
+            B.clear_inbox({"answers": [8978, 8980]}, mark_done=True); raised = False
+        except Exception:
+            raised = True
+        check("loop-0810: clear_inbox with int answers does not raise", not raised)
+
+        # (b) a bad 'answers' is rejected BEFORE any send
+        sends = []
+        real_call, C.DRY_RUN = B.call, False
+        B.call = lambda m, **kw: (sends.append((m, kw)) or
+                                  {"ok": True, "result": {"message_id": 9027}})
+        (C.OUTBOX / "ints.json").write_text(json.dumps({
+            "chat_id": 111, "text": "W×C register", "answers": [8978, 8980]}),
+            encoding="utf-8")
+        B.flush_outbox()
+        check("loop-0810: int answers -> rejected/, nothing sent",
+              (C.OUTBOX / "rejected" / "ints.json").exists()
+              and not (C.OUTBOX / "ints.json").exists() and sends == [])
+
+        # (c) a bookkeeping crash AFTER delivery never leaves the file queued
+        real_inner = B._clear_inbox
+        def boom(item, mark_done=False): raise RuntimeError("bookkeeping broke")
+        B._clear_inbox = boom
+        (C.OUTBOX / "once.json").write_text(json.dumps({
+            "chat_id": 111, "text": "say it once", "answers": ["1-111"]}),
+            encoding="utf-8")
+        B.flush_outbox(); B.flush_outbox()
+        n = sum(1 for m, _ in sends if m == "sendMessage")
+        check("loop-0810: crash after send -> sent exactly once, file in sent/",
+              n == 1 and not (C.OUTBOX / "once.json").exists()
+              and (C.SENT / "once.json").exists())
+        B._clear_inbox, B.call, C.DRY_RUN = real_inner, real_call, True
 
     print("test_eyes:", "OK" if fail == 0 else "FAIL", f"({ok} ok, {fail} fail)")
     return 0 if fail == 0 else 1

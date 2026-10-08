@@ -1118,6 +1118,91 @@ def handler_for(text: str, chat_id: int, chat: dict[str, Any]):
     return None, None
 
 
+# ── REQUEST HOOKS ──────────────────────────────────────────────────────────
+# The second extension point (settings.json -> on_request). A handler answers a
+# command; a request hook is only TOLD that a request has appeared in
+# requests/. It never speaks in the chat and the bridge never waits on it.
+#
+# WHY A WATCH OVER THE FOLDER AND NOT A CALL AT EACH WRITE. Requests are written
+# from eight places — a message, a reaction, a verdict, a service notice, a
+# letter from the watched folder and more. A hook called from each of them
+# would miss the ninth, written tomorrow: the same reason queue_watch.py reads a
+# request's chat from its file and never from its name. So one thread lists
+# requests/ once a second and tells the hooks about every name it has not seen,
+# whoever wrote it.
+#
+#   in  (stdin)  {"event": "new_requests" | "bridge_started",
+#                 "requests": [{"name", "chat_id", "file"}], "bridge": {...}}
+#   out          ignored. A non-zero exit or a timeout is printed, never
+#                retried. The request itself stays in requests/, so a failed
+#                hook loses the ring, never the request.
+#
+# THE FIRST PASS RINGS ONCE, WITH NO NAMES. A consumer that was waiting while
+# the bridge was down must look at the queue itself: the bridge cannot know
+# what that consumer missed, and listing everything already there would ring
+# for requests dealt with long ago.
+REQUEST_HOOK_TICK = 1.0
+
+
+def _request_chat_id(f: Path):
+    """A request's chat_id from its file; None when unreadable or absent."""
+    try:
+        return json.loads(f.read_text(encoding="utf-8")).get("chat_id")
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def run_request_hook(h: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Run one hook. Whatever happens to it is printed; nothing is raised."""
+    who = Path(h["run"][0]).name
+    try:
+        r = subprocess.run(h["run"], input=json.dumps(payload, ensure_ascii=False),
+                           capture_output=True, text=True, timeout=h["timeout"])
+    except subprocess.TimeoutExpired:
+        print(f"[{now()}] request hook {who}: timeout after {h['timeout']}s")
+        return
+    except OSError as e:                      # not installed, not executable
+        print(f"[{now()}] request hook {who}: cannot run: {e}")
+        return
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip()[-300:]
+        print(f"[{now()}] request hook {who}: exit {r.returncode} {tail}")
+
+
+def request_hooks_tick(seen: "set[str] | None") -> "set[str]":
+    """One pass over requests/: tell every hook what is new since `seen`.
+
+    Returns the names present now. A name that leaves and comes back is new
+    again — queue_watch.py forgets names the same way, so both sides agree on
+    what "new" means. Split from the loop so a stand can drive it pass by pass.
+    """
+    names = {p.stem: p for p in C.REQUESTS.glob("*.json")}
+    if seen is None:
+        event, fresh = "bridge_started", []
+    else:
+        event, fresh = "new_requests", sorted(set(names) - seen)
+    if seen is None or fresh:
+        payload = {
+            "event": event,
+            "requests": [{"name": n, "chat_id": _request_chat_id(names[n]),
+                          "file": str(names[n])} for n in fresh],
+            "bridge": {"root": str(C.ROOT), "bot_name": C.BOT_NAME},
+        }
+        for h in C.REQUEST_HOOKS:
+            run_request_hook(h, payload)
+    return set(names)
+
+
+def request_hooks_loop() -> None:
+    seen = None
+    while True:
+        try:
+            seen = request_hooks_tick(seen)
+        except Exception as e:
+            print(f"[{now()}] request hooks failed: {type(e).__name__}: {e}")
+        time.sleep(REQUEST_HOOK_TICK)
+
+
 def handle(update: dict[str, Any], whoami: bool) -> None:
     msg = update.get("message") or update.get("channel_post")
     if not msg:
@@ -1597,7 +1682,24 @@ def due_reminders() -> None:
     """
     now_ts = datetime.now(timezone.utc)
 
-    def retire(f: Path, why: str) -> None:
+    def retire(f: Path, why: str, resp: dict | None = None) -> None:
+        """Retire, and leave the receipt IN the file.
+
+        A retired reminder used to prove nothing on its own: the id Telegram
+        returned was thrown away, so `sent_reminders/` recorded only that this
+        code had decided to move the file. Reading it back later, the delivery
+        could be inferred from the code path and nowhere else — and a record
+        whose only witness is the code that wrote it is the shape of evidence
+        this whole protocol exists to stop. The id goes in before the rename."""
+        try:
+            if resp is not None:
+                r = json.loads(f.read_text(encoding="utf-8"))
+                r["sent_message_id"] = resp.get("result", {}).get("message_id")
+                r["sent_at"] = now_ts.isoformat(timespec="seconds")
+                r["retired"] = why
+                f.write_text(json.dumps(r, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:                  # a receipt must never lose the
+            print(f"[{now()}] receipt not stamped on {f.name}: {e}")  # message
         f.rename(C.SENT_REMINDERS / f.name)
         print(f"[{now()}] reminder retired ({why}): {f.name}")
 
@@ -1657,7 +1759,7 @@ def due_reminders() -> None:
                 print(f"[{now()}] reminder sent (try {r['tries']}, awaiting 👍) "
                       f"-> {r['chat_id']}: {r['text'][:40]}")
             else:
-                retire(f, "sent once")
+                retire(f, "sent once", resp or {})
                 print(f"[{now()}] reminder sent -> {r['chat_id']}: {r['text'][:50]}")
 
 
@@ -1762,6 +1864,36 @@ def pending_eyes() -> None:
     print(f"[{now()}] open eyes shown to the assistant: {key}")
 
 
+_VERSION = re.compile(r"[_\-. ]?v\d+(?:\.\d+)*(?=\.[^.]+$|$)", re.I)
+
+
+def explain_gone(gone: list, current: list) -> tuple:
+    """WHY A FILE LEFT, where the folder itself says so (a correspondent's suggestion, 2026-10-04: six files
+    reported GONE had in fact been replaced by v0.2 and moved to _Archive). Two checks, both on the CURRENT
+    listing, nothing guessed:
+      superseded — the same folder now holds a file whose name differs only by a version token
+                   (LEGION_X.md -> LEGION_X_v0.2.md, plan_v1.pdf -> plan_v2.pdf);
+      archived   — a file of the same name now lies under a folder called *archive*.
+    Everything else stays GONE with the old cautious wording: the watch still cannot tell who removed it.
+    -> (superseded [(old, new)], archived [(old, where)], gone [old])"""
+    cur = set(current)
+    sup, arc, rest = [], [], []
+    for f in gone:
+        d, name = (f.rsplit("/", 1) if "/" in f else ("", f))
+        base = _VERSION.sub("", name).lower()
+        newer = sorted(c for c in cur if (c.rsplit("/", 1)[0] if "/" in c else "") == d
+                       and _VERSION.sub("", c.rsplit("/", 1)[-1]).lower() == base and c != f)
+        moved = sorted(c for c in cur if c.rsplit("/", 1)[-1] == name
+                       and any("archive" in part.lower() for part in c.split("/")[:-1]))
+        if newer:
+            sup.append((f, newer[0]))
+        elif moved:
+            arc.append((f, moved[0]))
+        else:
+            rest.append(f)
+    return sup, arc, rest
+
+
 def mail_watch() -> None:
     """A watch over a shared folder — IT LIVES IN THE BRIDGE, not in the
     assistant's session.
@@ -1795,6 +1927,43 @@ def mail_watch() -> None:
             return []
         return sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
 
+    def _signatures(d: Path) -> dict:
+        """relative path -> [size, mtime_ns] of every file on the incoming side."""
+        out = {}
+        if d.exists():
+            for p in d.rglob("*"):
+                try:
+                    if p.is_file():
+                        st = p.stat()
+                        out[str(p.relative_to(d))] = [st.st_size, st.st_mtime_ns]
+                except OSError:
+                    pass
+        return out
+
+    def _root_listing() -> dict:
+        """relative path -> [size, mtime_ns] for every file in the shared folder
+        that lies OUTSIDE its two sides; hidden names are skipped at any depth.
+        The two sides are pruned, not filtered: they are not walked twice."""
+        out = {}
+        root = C.MAILWATCH_ROOT
+        if not root or not root.exists():
+            return out
+        sides = {s.resolve() for s in (C.MAILWATCH_IN, C.MAILWATCH_OUT) if s}
+        for dirpath, dirnames, filenames in os.walk(root):
+            d = Path(dirpath)
+            dirnames[:] = [n for n in dirnames if not n.startswith(".")
+                           and (d / n).resolve() not in sides]
+            for n in filenames:
+                if n.startswith("."):
+                    continue
+                f = d / n
+                try:
+                    st = f.stat()
+                    out[str(f.relative_to(root))] = [st.st_size, st.st_mtime_ns]
+                except OSError:
+                    pass
+        return out
+
     # 1) the mirror only adds, never deletes
     # The mirror keeps each watched folder under ITS OWN NAME. Two installations
     # name their folders differently, and hard-coding one operator's names put a
@@ -1808,6 +1977,27 @@ def mail_watch() -> None:
                                check=False, capture_output=True, timeout=120)
             except Exception as e:
                 print(f"[{now()}] the mail mirror did not run: {type(e).__name__}: {e}")
+
+    # 1c) THE ROOT GOES INTO THE MIRROR TOO, at the mirror's top level, the two
+    # sides excluded (they are mirrored above under their own names). A mirror
+    # that lies inside the root would copy itself into itself for ever — that is
+    # refused aloud rather than attempted.
+    if C.MAILWATCH_ROOT and C.MAILWATCH_ROOT.exists():
+        r, m = C.MAILWATCH_ROOT.resolve(), C.MAILWATCH_MIRROR.resolve()
+        if m == r or r in m.parents:
+            print(f"[{now()}] the root is NOT mirrored: the mirror {m} lies inside it")
+        else:
+            ex = ["--exclude=.*"]
+            for side in (C.MAILWATCH_IN, C.MAILWATCH_OUT):
+                try:
+                    ex.append(f"--exclude=/{side.resolve().relative_to(r)}/")
+                except ValueError:
+                    pass                    # that side lives elsewhere
+            try:
+                subprocess.run(["rsync", "-a", *ex, f"{r}/", f"{m}/"],
+                               check=False, capture_output=True, timeout=120)
+            except Exception as e:
+                print(f"[{now()}] the root mirror did not run: {type(e).__name__}: {e}")
 
     # 1b) THE MIRROR'S HISTORY. rsync without --delete does not remove files, but
     # it does overwrite CHANGED ones — so "the mirror only adds" was a comfort
@@ -1860,6 +2050,9 @@ def mail_watch() -> None:
                 pass                               # someone else's permissions are not ours
 
     cur_in, cur_out = _listing(C.MAILWATCH_IN), _listing(C.MAILWATCH_OUT)
+    sig_in = _signatures(C.MAILWATCH_IN)
+    root_now = _root_listing()
+    root_path = str(C.MAILWATCH_ROOT) if C.MAILWATCH_ROOT else None
     first_run = not C.MAILWATCH_STATE.exists()
     try:
         st = json.loads(C.MAILWATCH_STATE.read_text(encoding="utf-8")) if not first_run else {}
@@ -1876,7 +2069,8 @@ def mail_watch() -> None:
     moved = not first_run and st.get("paths") not in (None, paths)
     if first_run or moved:
         C.MAILWATCH_STATE.write_text(json.dumps(
-            {"in": cur_in, "out": cur_out, "paths": paths},
+            {"in": cur_in, "out": cur_out, "paths": paths, "in_sig": sig_in,
+         "root": root_now, "root_path": root_path},
             ensure_ascii=False), encoding="utf-8")
         why = "the watched folders changed" if moved else "started"
         print(f"[{now()}] the mail watch {why}: {len(cur_in)} letters already "
@@ -1885,20 +2079,65 @@ def mail_watch() -> None:
 
     new_in = [f for f in cur_in if f not in set(st.get("in", []))]
     gone_out = [f for f in st.get("out", []) if f not in set(cur_out)]
+    # A CHANGE UNDER THE SAME NAME IS A LETTER TOO. The listing compared names
+    # only, so a document sent again under its old name read as nothing at all,
+    # while what had been read before was no longer what lay there. The mark is
+    # size and mtime. A state written before signatures existed has none: that
+    # pass records them in silence rather than calling every file changed.
+    old_sig = st.get("in_sig")
+    edited_in = [] if not isinstance(old_sig, dict) else sorted(
+        f for f, sg in sig_in.items() if f in old_sig and list(old_sig[f]) != list(sg))
+    # THE ROOT HAS ITS OWN BASELINE. A state from before the root was watched
+    # (or from another root) re-signs the root in silence and leaves the two
+    # sides alone: adding a key must not cost the inbox its own events.
+    root_prev = st.get("root") if st.get("root_path") == root_path else None
+    if root_path and not isinstance(root_prev, dict):
+        new_root, changed_root, gone_root = [], [], []
+        print(f"[{now()}] the mail watch took the shared folder's root: "
+              f"{len(root_now)} files already there (silently)")
+    else:
+        root_prev = root_prev or {}
+        new_root = sorted(f for f in root_now if f not in root_prev)
+        changed_root = sorted(f for f in root_now
+                              if f in root_prev and list(root_prev[f]) != list(root_now[f]))
+        gone_root = sorted(f for f in root_prev if f not in root_now)
     C.MAILWATCH_STATE.write_text(json.dumps(
-        {"in": cur_in, "out": cur_out, "paths": paths},
+        {"in": cur_in, "out": cur_out, "paths": paths, "in_sig": sig_in,
+         "root": root_now, "root_path": root_path},
         ensure_ascii=False), encoding="utf-8")
-    if not (new_in or gone_out):
+    if not (new_in or gone_out or edited_in or new_root or changed_root or gone_root):
         return
 
-    # move the previous call out of sight, or mail notes pile up in the inbox
-    for old in C.REQUESTS.glob("mailwatch-*.json"):
-        old.rename(C.SERVED / old.name)
+    # THE PREVIOUS CALL STAYS UNTIL IT IS ANSWERED. It used to be moved to served/
+    # the moment a newer letter arrived, "or mail notes pile up in the inbox" —
+    # but the newer call lists only what is NEW, so an unanswered earlier letter
+    # left the queue with nobody having read it. A watcher that wakes once per
+    # call, and is away while it handles one, makes that gap routine. A pile of
+    # unanswered mail is a fact to be seen, not noise to be hidden.
 
     parts = []
     if new_in:
         parts.append(T("mail.arrived", folder=C.MAILWATCH_IN.name) + "\n"
                      + "\n".join(f"    {f}" for f in new_in))
+    if edited_in:
+        parts.append(T("mail.edited", folder=C.MAILWATCH_IN.name) + "\n"
+                     + "\n".join(f"    {f}" for f in edited_in))
+    sup_r, arc_r, gone_root = explain_gone(gone_root, list(root_now))
+    for keyed, files in (("mail.arrived", new_root), ("mail.edited", changed_root),
+                         ("mail.gone", gone_root)):
+        if files:
+            parts.append(T(keyed, folder=C.MAILWATCH_ROOT.name) + "\n"
+                         + "\n".join(f"    {f}" for f in files))
+    sup_o, arc_o, gone_out = explain_gone(gone_out, cur_out)
+    for sup, arc, folder in ((sup_r, arc_r, C.MAILWATCH_ROOT), (sup_o, arc_o, C.MAILWATCH_OUT)):
+        if folder is None:
+            continue
+        if sup:
+            parts.append(T("mail.superseded", folder=folder.name) + "\n"
+                         + "\n".join(f"    {a}  ->  {b}" for a, b in sup))
+        if arc:
+            parts.append(T("mail.archived", folder=folder.name) + "\n"
+                         + "\n".join(f"    {a}  ->  {b}" for a, b in arc))
     if gone_out:
         # NOT "THEY TOOK IT". The watch sees only a snapshot of the folder
         # before and after, and cannot tell "the counterparty took it" from "we
@@ -1951,7 +2190,8 @@ def mail_watch() -> None:
         "request_id": stem, "chat_id": None, "from_principal": False,
         "selfcheck": False, "text": C.MAILWATCH_LABEL + "\n" + "\n\n".join(parts)},
         ensure_ascii=False), encoding="utf-8")
-    print(f"[{now()}] mail: {len(new_in)} new, {len(gone_out)} taken")
+    print(f"[{now()}] mail: {len(new_in)} new, {len(edited_in)} changed, {len(gone_out)} taken; "
+          f"root: {len(new_root)} new, {len(changed_root)} changed, {len(gone_root)} gone")
 
 
 def nudge_unanswered() -> None:
@@ -2188,6 +2428,28 @@ def split_for_telegram(text: str) -> list[str]:
 
 
 def clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
+    """Bookkeeping after a send — and it must NEVER raise.
+
+    It runs AFTER the message has already gone out. On 2026-10-08 an outbox
+    item named its answers as integers ([8978, 8980]); rid.startswith() raised,
+    pump() swallowed it, the file stayed in the outbox and was sent again every
+    second — 46 duplicate copies in a group. Delivery had happened;
+    only the bookkeeping failed, and a bookkeeping failure must cost a log line,
+    not a resend. So: ids are coerced to str, and anything that still breaks
+    is reported and swallowed HERE, where the caller goes on to move the file
+    to sent/.
+    """
+    try:
+        item = dict(item)
+        item["answers"] = [str(a) for a in (item.get("answers") or [])]
+        _clear_inbox(item, mark_done)
+    except Exception as e:
+        print(f"[{now()}] CLEAR_INBOX FAILED after delivery ({e!r}) — "
+              f"answers {item.get('answers')} stay open; the message is NOT resent")
+        traceback.print_exc()
+
+
+def _clear_inbox(item: dict[str, Any], mark_done: bool = False) -> None:
     """Move every request this reply names out of the inbox.
 
     A request leaves requests/ only by being NAMED, whatever form the answer
@@ -2444,6 +2706,24 @@ def flush_outbox() -> None:
             f.unlink(missing_ok=True)
             print(f"[{now()}] OUTBOX REJECTED — unrecognised shape "
                   f"(keys {sorted(item)}): {f.name} -> rejected/")
+            continue
+        # ANSWERS ARE REQUEST IDS, AS STRINGS — checked BEFORE the send. An id
+        # is "<message_id>-<chat_id>", the stem of a requests/ file; a bare
+        # number names no request and closes no eye. Rejected with a reason so
+        # the writer learns, rather than sent and left half-recorded (the
+        # 2026-10-08 resend loop began with answers [8978, 8980]).
+        ans = item.get("answers")
+        if ans is not None and (not isinstance(ans, list)
+                                or not all(isinstance(a, str) and a for a in ans)):
+            (C.OUTBOX / "rejected").mkdir(exist_ok=True)
+            item["_rejected"] = ("'answers' must be a list of request-id strings "
+                                 "like \"284--100987654321\" (the requests/ file "
+                                 f"stem), got {ans!r}")
+            (C.OUTBOX / "rejected" / f.name).write_text(
+                json.dumps(item, ensure_ascii=False, indent=1), encoding="utf-8")
+            f.unlink(missing_ok=True)
+            print(f"[{now()}] OUTBOX REJECTED — bad answers {ans!r}: "
+                  f"{f.name} -> rejected/")
             continue
         # A FILE IN THE QUEUE. The request was "send the file here into the
         # chat"; before v1.3.0 the bridge could only do text, and that was an
@@ -2783,6 +3063,12 @@ def main() -> int:
             print(f"[{now()}] THE TAMPER WATCH IS BROKEN: {type(e).__name__}: "
                   f"{e} — not starting")
             return 91
+
+    # THE REQUEST HOOKS START AFTER THE TAMPER WATCH: a bridge that refuses to
+    # run must not ring "started" to anyone waiting on it.
+    if not whoami and C.REQUEST_HOOKS:
+        threading.Thread(target=request_hooks_loop, daemon=True).start()
+        print(f"  request hooks: {len(C.REQUEST_HOOKS)}")
 
     # AN EMPTY OR BROKEN offset IS NO REASON NOT TO START. It used to be written
     # non-atomically: an interruption (power, OOM, a full disk) between the
