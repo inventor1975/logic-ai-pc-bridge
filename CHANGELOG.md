@@ -2,24 +2,38 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.2.2 — 2026-10-22
+
+A correction to v2.2.1's own text, no change in behaviour. v2.2.1 said a
+"yes" kept 👀 for 24 minutes "while the room's session already held it"; the
+bridge's log shows no session had been woken on it — the corrected reason is
+in the v2.2.1 entry below, in `queue_watch.py`'s comment and in the README.
+The README also said ✍ means "in hand"; it means a session was woken, not
+that the message was read. `queue_watch.py` sha256 b6fb086692b0… (comment only).
+
 ## v2.2.1 — 2026-10-22
 
-Three changes from the workshop since v2.2.0, each already running on the
-author's own installation before release.
+Three changes from the workshop since v2.2.0 (released 2026-10-08), each
+already deployed on the author's own installation before this release.
 
 ### 2026-10-22
 
-The eyes change the moment the assistant wakes, not when it has decided.
+The mark changes when a session is woken on the message, not when the
+assistant has decided something.
 
 - **✍ at wake-up.** 👀 still goes up when the bridge stores a request. When
   `queue_watch.py` wakes a session on a message of its own zone, it now puts
-  ✍ in the outbox at once — "woken with this in hand". The item names no
-  `answers`, so the request stays open and the reply's completion mark
-  replaces ✍ as before. `peer:` calls, service notices and mail get no mark.
-  Measured before the change: a one-word "yes" in a room kept 👀 for 24
-  minutes while the room's session already held it. The bridge itself is
-  unchanged — it already applies any `*.react.json` in the outbox.
-  `queue_watch.py` sha256 0cc5d5e76476…; stand: `test_taken_mark.py` (8/8).
+  ✍ in the outbox; the bridge applies it on its next outbox pass. ✍ records
+  the wake, not a reading. The item names no `answers`, so the request stays
+  open and the reply's completion mark replaces ✍ the way it replaces 👀.
+  `peer:` calls (`--watch-peer`), service notices and mail get no mark. Why:
+  with 👀 alone, "stored" and "a session has it" looked the same — a one-word
+  "yes" in a room sat 24 minutes under 👀 because no session had been woken on
+  it, and nothing on the phone said so. The bridge itself is unchanged — it
+  already applies any `*.react.json` in the outbox. Stand: `test_taken_mark.py`
+  (8 checks: a private and a group message marked, the group's negative chat
+  id kept whole, no `answers`, no mark for `peer:`, service or mail, none for
+  `--once`, ✍ a reaction Telegram accepts).
 
 ### 2026-10-12
 
@@ -29,7 +43,7 @@ The eyes change the moment the assistant wakes, not when it has decided.
   `manifest-sha256` of exactly the tree on disk. Without the policy,
   `--approve` is unchanged; `--without-receipt "why"` still approves and is
   written to `drift_overrides.jsonl`. A hand copy followed by `--approve` was
-  a bypass the watch could not see. `drift.py` sha256 9d99926caafe…;
+  a bypass the watch could not see; without the policy file it still is. `drift.py` sha256 9d99926caafe…;
   stand: `test_drift_refusal.py` (22/22).
 
 ### 2026-10-09

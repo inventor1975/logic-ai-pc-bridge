@@ -190,11 +190,13 @@ remembering will eventually not be remembered.
 
 **One stage between, and it is placed by the watch, not by hand.** When
 `queue_watch.py` wakes a session on a message, it replaces 👀 with ✍ at that
-moment: "the assistant has woken with this in hand". That is a fact, not a
-judgement, so it needs no decision and cannot drift; it closes nothing, the
-request stays open, and the reply's completion mark replaces ✍ as before. A
-call about another operator's request (`peer:`) gets no ✍ — that session has
-not taken it.
+moment (the bridge applies it on its next outbox pass). ✍ records that a
+session has been WOKEN with the message, not that it has read it — a woken
+session may still be finishing another turn. Being placed by code on an event,
+not by the assistant's judgement, it does not drift; it closes nothing, the
+request stays open, and the reply's completion mark replaces ✍ the way it
+replaces 👀. A call about another operator's request (`peer:`, a watch run with
+`--watch-peer`) gets no ✍ — that session has not been given it.
 
 **A chosen mark means DONE, not doing.** Replacing 👀 or ✍ by hand says the
 work is finished. An earlier vocabulary mixed the two — "accepted, will do" sat beside "understood"
@@ -236,8 +238,8 @@ had been heard. Attention is the wrong place to keep that record — it fails
 precisely when two things arrive at once, which is exactly when it matters.
 
 **Every request carries the open-eye list (`open_eyes`).** A field on each
-request to the assistant lists every message that still wears 👀 — everything
-not yet closed. This exists because the report of what was owed only scanned
+request to the assistant lists every message not yet closed — the ones still
+wearing 👀 or ✍. This exists because the report of what was owed only scanned
 `requests/`: once a request aged out into `served/` (after
 `SERVICE_REQUEST_KEEP_HOURS`) with its eye still open, it fell out of the report
 and became invisible, and the assistant could not close what it could not see.

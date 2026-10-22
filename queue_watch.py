@@ -221,14 +221,18 @@ MESSAGE_NAME = re.compile(r"^(\d+)-(-?\d+)$")   # <message>-<chat>: a real messa
 # THE SECOND STAGE OF THE MARK, by the operator's word (2026-10-22): "the eyes
 # appear as now, when the bridge receives a message, and then the AI changes
 # them into a reaction AS SOON AS IT WAKES, not some time later when it has
-# decided something". Measured that day: the correspondent's one-word "yes"
-# (10122) kept 👀 for 24 minutes while the room session already held it.
+# decided something". With 👀 alone the principal could not tell "stored" from
+# "an assistant has been woken with it": a one-word "yes" in a room (10122) sat
+# 24 minutes under 👀 because NO session had been woken on it — and nothing on
+# the phone showed that difference.
 #
-# So the watch that wakes a session on a message puts ✍ at that moment. It is a
-# FACT, not a judgement — "the assistant has woken with this message in hand" —
-# so it cannot drift the way a hand-placed "will do" did (react.py says why
-# those were dropped). It is NOT done: the outbox item names no answers, the
-# request stays open, and the done-mark of the reply replaces ✍ as before.
+# So the watch that wakes a session on a message puts ✍ at that moment. It
+# records the WAKE, not a reading: a woken session may still be busy with
+# another turn. Because it is placed by code on an event rather than by the
+# assistant's judgement, it does not drift the way a hand-placed "will do" did
+# (react.py says why those were dropped). It is NOT done: the outbox item names
+# no answers, the request stays open, and the reply's done-mark replaces ✍ the
+# way it replaced 👀. The bridge applies it on its next outbox pass (~1 s).
 #
 # It lives HERE and not in config.py on purpose: config.py and react.py are under
 # the tamper watch (drift.py) and change only through a rollout with a receipt;
