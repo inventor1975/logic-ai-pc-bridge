@@ -32,6 +32,15 @@ PAUSE = 20.0
 #   --only 500600700     take ONLY this chat
 #   --except 500600700   take everything EXCEPT it
 #
+# A THIRD SESSION (2026-10-09): a dedicated room watched by its own session (the
+# principal's lawyer group) must leave the room watch AND must not take the
+# chat-less service notices. Both flags take a comma list
+# (--except 500600700,-9999000111), and --no-service makes a zone refuse the
+# notices that carry no chat, which by the general rule fall to every zone that
+# excludes nothing. Without it a third --only zone would be woken by every open
+# eye of the private chat.
+#   --only -9999000111 --no-mail --no-service    the dedicated room's own session
+#
 # THE MEMORY IS PER ZONE, and that is not a detail. One "already seen" file
 # shared by two processes would let the room watch mark a private request as
 # shown — and the private session would never be woken at all. A silent failure
@@ -46,6 +55,9 @@ def _zone(argv):
     return only, other
 
 ONLY, EXCEPT = _zone(sys.argv)
+_set = lambda v: None if v is None else {c.strip() for c in v.split(",") if c.strip()}
+ONLY_SET, EXCEPT_SET = _set(ONLY), _set(EXCEPT)
+NO_SERVICE = "--no-service" in sys.argv   # never take a notice that carries no chat
 NO_MAIL = "--no-mail" in sys.argv   # an operator told not to watch the
 # correspondent's folder at all (mailwatch-*), by the principal's word.
 
@@ -102,10 +114,11 @@ def in_zone(chat) -> bool:
     is on the hook.
     """
     if chat is None:
-        return EXCEPT is None          # the private watch takes it; the room one does not
+        # the private watch takes it; the room one does not, nor a dedicated room's
+        return EXCEPT is None and not NO_SERVICE
     chat = str(chat)
-    if ONLY is not None: return chat == ONLY
-    if EXCEPT is not None: return chat != EXCEPT
+    if ONLY_SET is not None: return chat in ONLY_SET
+    if EXCEPT_SET is not None: return chat not in EXCEPT_SET
     return True
 
 
@@ -201,6 +214,51 @@ def peer_missed(name, rf, text, entries, kind):
         if mins >= C.NUDGE_AFTER_MIN:
             entries.append({"kind": kind, "name": f"peer:{name}",
                             "text": T("watch.peer_mail_waiting", name=name, mins=mins, text=text[:300])})
+
+
+MESSAGE_NAME = re.compile(r"^(\d+)-(-?\d+)$")   # <message>-<chat>: a real message
+
+# THE SECOND STAGE OF THE MARK, by the operator's word (2026-10-22): "the eyes
+# appear as now, when the bridge receives a message, and then the AI changes
+# them into a reaction AS SOON AS IT WAKES, not some time later when it has
+# decided something". Measured that day: the correspondent's one-word "yes"
+# (10122) kept 👀 for 24 minutes while the room session already held it.
+#
+# So the watch that wakes a session on a message puts ✍ at that moment. It is a
+# FACT, not a judgement — "the assistant has woken with this message in hand" —
+# so it cannot drift the way a hand-placed "will do" did (react.py says why
+# those were dropped). It is NOT done: the outbox item names no answers, the
+# request stays open, and the done-mark of the reply replaces ✍ as before.
+#
+# It lives HERE and not in config.py on purpose: config.py and react.py are under
+# the tamper watch (drift.py) and change only through a rollout with a receipt;
+# this file is not, and nothing in the bridge itself needed to change — it
+# already applies any *.react.json in the outbox.
+TAKEN_EMOJI = "✍"
+
+
+def mark_taken(name: str) -> bool:
+    """The session is being woken with this message: 👀 -> ✍ (config.TAKEN_EMOJI).
+
+    Only a message of THIS zone (the caller passes only those — a "peer:" call
+    wakes a session that does not own the request, and a mark would claim a
+    take that did not happen). Service notices, mail and reactions carry no
+    message of their own and are skipped. The outbox item names NO answers, so
+    the bridge sets the mark and leaves the request open: ✍ is taken, not done.
+    A failure here costs the mark, never the wake-up."""
+    m = MESSAGE_NAME.match(name)
+    if not m:
+        return False
+    try:
+        mid, chat = int(m.group(1)), int(m.group(2))
+        out = HERE / "outbox"
+        out.mkdir(exist_ok=True)
+        (out / f"{mid}-{chat}.react.json").write_text(
+            json.dumps({"chat_id": chat, "message_id": mid, "emoji": TAKEN_EMOJI},
+                       ensure_ascii=False), encoding="utf-8")
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def queue():
@@ -320,6 +378,8 @@ def main():
             if e["name"] in seen: continue
             seen.add(e["name"])
             print(T("watch.you_are_called", name=e["name"], text=e["text"]), flush=True)
+            if not e["name"].startswith("peer:"):
+                mark_taken(e["name"])
             called = True
         alive = {e["name"] for e in entries}
         # forget what has gone, or the memory grows for ever and a repeated

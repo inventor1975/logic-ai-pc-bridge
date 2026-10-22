@@ -2,6 +2,43 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.2.1 — 2026-10-22
+
+Three changes from the workshop since v2.2.0, each already running on the
+author's own installation before release.
+
+### 2026-10-22
+
+The eyes change the moment the assistant wakes, not when it has decided.
+
+- **✍ at wake-up.** 👀 still goes up when the bridge stores a request. When
+  `queue_watch.py` wakes a session on a message of its own zone, it now puts
+  ✍ in the outbox at once — "woken with this in hand". The item names no
+  `answers`, so the request stays open and the reply's completion mark
+  replaces ✍ as before. `peer:` calls, service notices and mail get no mark.
+  Measured before the change: a one-word "yes" in a room kept 👀 for 24
+  minutes while the room's session already held it. The bridge itself is
+  unchanged — it already applies any `*.react.json` in the outbox.
+  `queue_watch.py` sha256 0cc5d5e76476…; stand: `test_taken_mark.py` (8/8).
+
+### 2026-10-12
+
+- **Approval bound to a deployment receipt.** An installation that puts
+  `approve_policy.json` beside `drift.py` gets a `--approve` that refuses
+  (exit 91) unless `--receipt` names a fresh ALLOW deployment receipt listing
+  `manifest-sha256` of exactly the tree on disk. Without the policy,
+  `--approve` is unchanged; `--without-receipt "why"` still approves and is
+  written to `drift_overrides.jsonl`. A hand copy followed by `--approve` was
+  a bypass the watch could not see. `drift.py` sha256 9d99926caafe…;
+  stand: `test_drift_refusal.py` (22/22).
+
+### 2026-10-09
+
+- **A third zone.** `--only` / `--except` take a comma list, and
+  `--no-service` makes a zone refuse the chat-less service notices — so a
+  dedicated room can have its own session without being woken by every open
+  eye of the private chat. Stand: `test_queue_watch_modes.py` (29/29).
+
 ## v2.2.0 — 2026-10-08
 
 New capabilities collected in the workshop since 2026-09-21 (the zone of each

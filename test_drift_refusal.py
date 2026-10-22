@@ -104,6 +104,52 @@ check("CONTROL: the refusal code is distinct from 0, 1 and 2",
       EXPECTED_DRIFT_CODE not in (0, 1, 2),
       "a tamper refusal is indistinguishable from an ordinary error")
 
+# --- 9. APPROVAL BOUND TO A DEPLOYMENT RECEIPT (an installation's approve_policy.json) ---
+# Five hand rollouts in a fortnight were approved by hand: the watch saw nothing because approving needed nothing.
+import hashlib as _h
+from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+def digest(d):
+    names = sorted({p.name for p in d.glob("*.py")} | {"drift.py", "config.py"})
+    files = {n: _h.sha256((d / n).read_bytes()).hexdigest() for n in names if (d / n).is_file()}
+    return _h.sha256(json.dumps(files, sort_keys=True).encode("utf-8")).hexdigest()
+
+def receipt(d, folder, decision="ALLOW", age_s=10, sha=None, name="r.json"):
+    made = (_dt.now(_tz.utc) - _td(seconds=age_s)).isoformat()
+    p = folder / name
+    p.write_text(json.dumps({"created_at": made, "decision": {"classification": decision},
+                             "action": {"context_refs": ["tg_bridge.py", "manifest-sha256:" + (sha or digest(d))]}}),
+                 encoding="utf-8")
+    return p
+
+rdir = pathlib.Path(tempfile.mkdtemp())
+(d / "approve_policy.json").write_text(json.dumps({"receipts": str(rdir), "max_age_s": 3600}), encoding="utf-8")
+code, out = run(d, "--approve")
+check("with a policy, --approve WITHOUT a receipt is refused (code 91)", code == 91 and "--receipt" in out, out.strip()[:160])
+code, out = run(d, "--approve", "--receipt", str(receipt(d, rdir)))
+check("CONTROL: a fresh ALLOW receipt naming this very tree approves", code == 0, out.strip()[:160])
+p.write_text(p.read_text(encoding="utf-8") + "# a hand edit after the deployment\n", encoding="utf-8")
+code, out = run(d, "--approve", "--receipt", str(rdir / "r.json"))
+check("a file changed after the deployment: the old receipt does not approve it", code == 91
+      and "different tree" in out, out.strip()[:160])
+code, out = run(d, "--approve", "--receipt", str(receipt(d, rdir, decision="ESCALATE", name="e.json")))
+check("an ESCALATE receipt does not approve", code == 91 and "ESCALATE" in out, out.strip()[:160])
+code, out = run(d, "--approve", "--receipt", str(receipt(d, rdir, age_s=7200, name="o.json")))
+check("a stale receipt does not approve", code == 91 and "old" in out, out.strip()[:160])
+other = pathlib.Path(tempfile.mkdtemp())
+code, out = run(d, "--approve", "--receipt", str(receipt(d, other, name="x.json")))
+check("a receipt from outside the policy's folder does not approve", code == 91, out.strip()[:160])
+code, out = run(d, "--approve", "--without-receipt", "")
+check("an override needs a reason", code == 91, out.strip()[:160])
+code, out = run(d, "--approve", "--without-receipt", "stand: hotfix on the principal's word")
+ov = d / "drift_overrides.jsonl"
+check("an override with a reason approves AND is written down", code == 0 and ov.exists()
+      and "hotfix" in ov.read_text(encoding="utf-8"), out.strip()[:160])
+code, out = run(d)
+check("CONTROL: after the override the tree passes the check", code == 0, out.strip()[:160])
+shutil.rmtree(rdir, ignore_errors=True)
+shutil.rmtree(other, ignore_errors=True)
+
 shutil.rmtree(d, ignore_errors=True)
 print(f"\nDRIFT-REFUSAL {'GREEN' if not fail else 'RED'}: {ok} OK, {fail} FAIL")
 sys.exit(1 if fail else 0)

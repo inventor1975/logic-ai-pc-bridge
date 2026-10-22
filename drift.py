@@ -5,6 +5,21 @@
 
     ./drift.py --check     compare and return an exit code
     ./drift.py --approve   record the present state as the approved one
+    ./drift.py --approve --receipt PACK.json      (with an approval policy, below)
+    ./drift.py --approve --without-receipt "why"  (an override, written down)
+
+APPROVAL BOUND TO A DEPLOYMENT RECEIPT (since 2026-10-12). Catching an edit that
+bypassed the rollout only works if APPROVING it also needs the rollout: a hand
+copy followed by --approve was a bypass the watch could not see, and it happened
+at least five times between 2026-09-27 and 2026-10-09 on the author's own
+installation. An installation that puts `approve_policy.json` beside this file,
+    {"receipts": "/path/to/deploy/receipts", "max_age_s": 3600}
+gets an --approve that refuses unless --receipt names a deployment receipt from
+that folder: a JSON record whose decision is ALLOW, made within max_age_s, that
+lists "manifest-sha256:<digest>" for EXACTLY the tree now on disk (any VEIP
+evidence pack written by a deployment gate has this shape). Without the policy
+file, --approve behaves as before. --without-receipt still approves, and writes
+the reason to drift_overrides.jsonl: a bypass that is recorded, not a silent one.
 
 THE HONEST BOUNDARY, NAMED FIRST. This watch does NOT protect against anyone
 with access to the bridge's directory: whoever can edit `tg_bridge.py` can also
@@ -38,6 +53,9 @@ WATCHED = ("tg_bridge.py", "config.py", "propose.py", "pending.py", "react.py",
            "rules.py", "test_gate.py", "test_attach.py")
 APPROVED = C.ROOT / "approved_manifest.json"
 REFUSALS = C.ROOT / "drift_refusals.jsonl"
+POLICY = C.ROOT / "approve_policy.json"
+OVERRIDES = C.ROOT / "drift_overrides.jsonl"
+EXIT_NO_RECEIPT = 91     # an approval refused for want of a deployment receipt
 
 
 def manifest() -> dict[str, str]:
@@ -56,6 +74,42 @@ def manifest() -> dict[str, str]:
         if p.exists() and p.is_file():
             out[name] = hashlib.sha256(p.read_bytes()).hexdigest()
     return out
+
+
+def manifest_digest(files: dict[str, str]) -> str:
+    """One digest for a whole manifest: what a deployment receipt names."""
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def receipt_problem(path: str | None, now: datetime) -> str | None:
+    """None when the receipt allows approving the tree now on disk, else why not."""
+    try:
+        policy = json.loads(POLICY.read_text(encoding="utf-8"))
+        folder = Path(policy["receipts"]).resolve()
+        max_age = float(policy.get("max_age_s", 3600))
+    except Exception as e:                       # noqa: BLE001 — a broken policy refuses
+        return f"approve_policy.json is unreadable ({type(e).__name__}): fix it, do not delete it"
+    if not path:
+        return "this installation approves only with --receipt (a deployment receipt)"
+    p = Path(path).resolve()
+    if p.parent != folder:
+        return f"the receipt is not in the receipts folder named by the policy ({folder})"
+    try:
+        r = json.loads(p.read_text(encoding="utf-8"))
+        decision = r["decision"]["classification"]
+        made = datetime.fromisoformat(r["created_at"])
+        refs = r["action"].get("context_refs") or []
+    except Exception as e:                       # noqa: BLE001
+        return f"the receipt is unreadable ({type(e).__name__})"
+    if decision != "ALLOW":
+        return f"the receipt's decision is {decision}, not ALLOW"
+    age = (now - made).total_seconds()
+    if not 0 <= age <= max_age:
+        return f"the receipt is {int(age)} s old (the policy allows {int(max_age)} s)"
+    want = "manifest-sha256:" + manifest_digest(manifest())
+    if want not in refs:
+        return "the receipt names a different tree than the one on disk (a file changed after the deployment)"
+    return None
 
 
 def check() -> tuple[bool, dict]:
@@ -79,9 +133,29 @@ def check() -> tuple[bool, dict]:
 
 def main(argv: list[str]) -> int:
     if "--approve" in argv:
+        now = datetime.now(timezone.utc)
+        note = "recorded during the move; see the move receipt"
+        if POLICY.exists():
+            receipt = argv[argv.index("--receipt") + 1] if "--receipt" in argv[:-1] else None
+            if "--without-receipt" in argv:
+                i = argv.index("--without-receipt")
+                why = argv[i + 1] if i + 1 < len(argv) else ""
+                if not why.strip():
+                    print("REFUSED: --without-receipt needs a reason (it is written down)")
+                    return EXIT_NO_RECEIPT
+                with OVERRIDES.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"at": now.isoformat(timespec="seconds"), "reason": why,
+                                        "manifest-sha256": manifest_digest(manifest())},
+                                       ensure_ascii=False) + "\n")
+                note = f"OVERRIDE without a receipt: {why}"
+            else:
+                problem = receipt_problem(receipt, now)
+                if problem:
+                    print(f"REFUSED TO APPROVE: {problem}")
+                    return EXIT_NO_RECEIPT
+                note = f"approved against the deployment receipt {Path(receipt).name}"
         APPROVED.write_text(json.dumps(
-            {"approved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-             "note": "recorded during the move; see the move receipt",
+            {"approved_at": now.isoformat(timespec="seconds"), "note": note,
              "files": manifest()}, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"approved {len(manifest())} files -> {APPROVED.name}")
         return 0

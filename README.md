@@ -188,9 +188,16 @@ request it answers (`"answers": [...]`), the bridge clears it from the inbox
 rule was written and broken one message later. Anything that depends on
 remembering will eventually not be remembered.
 
-**The mark means DONE, not doing.** 👀 stays for as long as the work lasts;
-replacing it says the work is finished, and nothing else replaces it. An
-earlier vocabulary mixed the two — "accepted, will do" sat beside "understood"
+**One stage between, and it is placed by the watch, not by hand.** When
+`queue_watch.py` wakes a session on a message, it replaces 👀 with ✍ at that
+moment: "the assistant has woken with this in hand". That is a fact, not a
+judgement, so it needs no decision and cannot drift; it closes nothing, the
+request stays open, and the reply's completion mark replaces ✍ as before. A
+call about another operator's request (`peer:`) gets no ✍ — that session has
+not taken it.
+
+**A chosen mark means DONE, not doing.** Replacing 👀 or ✍ by hand says the
+work is finished. An earlier vocabulary mixed the two — "accepted, will do" sat beside "understood"
 and from the outside they were the same picture. A mark that might mean either
 is worse than no mark, because the reader stops checking: he sees a mark,
 assumes it is done, and finds out otherwise later. If something will take a

@@ -34,10 +34,12 @@ def check(name, cond, why=""):
     else: print(f"  FAIL {name} — {why}"); fail += 1
 
 
-PRIVATE, ROOM = "500", "777"
+PRIVATE, ROOM, LAWYER = "500", "777", "-888"
 REQUESTS = {
     "100-500":        {"chat_id": 500, "text": "a private question"},
     "200-777":        {"chat_id": 777, "text": "a room question"},
+    "300--888":       {"chat_id": -888, "text": "a question in the dedicated (lawyer) room"},
+    "pending-eyes-3": {"chat_id": None, "text": "OPEN EYES\\n 300--888  4m"},
     "mailwatch-1":    {"chat_id": None, "text": "MAIL\\nnew letter"},
     "pending-eyes-1": {"chat_id": None, "text": "OPEN EYES\\n mailwatch-1  12m"},
     "pending-eyes-2": {"chat_id": None, "text": "OPEN EYES\\n 100-500  9m\\n mailwatch-1  12m"},
@@ -117,17 +119,39 @@ def run() -> int:
           me == {"100-500", "pending-eyes-2", "emoji-notice-1"}, str(sorted(me)))
     rooms = route(tmp, ["--except", PRIVATE, "--mail"])
     check("--except --mail takes the rooms AND the folder, and every eye list naming it",
-          rooms == {"200-777", "mailwatch-1", "pending-eyes-1", "pending-eyes-2"}, str(sorted(rooms)))
+          rooms == {"200-777", "300--888", "mailwatch-1", "pending-eyes-1", "pending-eyes-2", "pending-eyes-3"},
+          str(sorted(rooms)))
     check("  the two zones together leave NOTHING unwatched",
           set(REQUESTS) <= (me | rooms), str(sorted(set(REQUESTS) - (me | rooms))))
     check("  and the folder itself goes to exactly one of them",
           ("mailwatch-1" in me) + ("mailwatch-1" in rooms) == 1, f"me={sorted(me)} rooms={sorted(rooms)}")
     old_rooms = route(tmp, ["--except", PRIVATE])
     check("without --mail the room zone is unchanged: no folder",
-          old_rooms == {"200-777"}, str(sorted(old_rooms)))
+          old_rooms == {"200-777", "300--888", "pending-eyes-3"}, str(sorted(old_rooms)))
     old_me = route(tmp, ["--only", PRIVATE])
     check("without any flag the folder still falls to the private session, as before",
           "mailwatch-1" in old_me and "pending-eyes-1" in old_me, str(sorted(old_me)))
+
+    # ── A THIRD, DEDICATED ROOM (2026-10-09: the principal's lawyer group) ──
+    me3 = route(tmp, ["--only", PRIVATE, "--no-mail"])
+    rooms3 = route(tmp, ["--except", f"{PRIVATE},{LAWYER}", "--mail"])
+    law3 = route(tmp, ["--only", LAWYER, "--no-mail", "--no-service"])
+    check("three zones: the dedicated room's session takes its room and its eye list, nothing else",
+          law3 == {"300--888", "pending-eyes-3"}, str(sorted(law3)))
+    check("  the room watch with a comma list leaves the dedicated room alone",
+          "300--888" not in rooms3 and "pending-eyes-3" not in rooms3 and "200-777" in rooms3, str(sorted(rooms3)))
+    check("  the private session is unchanged",
+          me3 == {"100-500", "pending-eyes-2", "emoji-notice-1"}, str(sorted(me3)))
+    check("  the three zones together leave NOTHING unwatched",
+          set(REQUESTS) <= (me3 | rooms3 | law3), str(sorted(set(REQUESTS) - (me3 | rooms3 | law3))))
+    # an eye LIST naming eyes of two zones wakes both by design (pending-eyes-2:
+    # a private eye and the folder's); every other request goes to exactly one
+    shared = {n for n in REQUESTS if (n in me3) + (n in rooms3) + (n in law3) > 1}
+    check("  and no request but a two-zone eye list is taken by two of them",
+          shared <= {"pending-eyes-2"}, str(sorted(shared)))
+    law_no_flag = route(tmp, ["--only", LAWYER, "--no-mail"])
+    check("  WITHOUT --no-service a third --only zone would take the chat-less notices (the flag is load-bearing)",
+          "emoji-notice-1" in law_no_flag, str(sorted(law_no_flag)))
 
     # ── --watch-peer ───────────────────────────────────────────────────────
     # Two requests the bridge has already called unpicked ("nudged"), one in each
