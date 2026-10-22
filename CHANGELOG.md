@@ -2,9 +2,24 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.2.4 — 2026-10-22
+
+Two lines the v2.2.3 entry owed its reader, added there: how to check an
+installation made with the old setup, and what the fix still leaves to the
+person at the keyboard. No code change.
+
 ## v2.2.3 — 2026-10-22
 
-Setup could make a stranger the owner. Fixed.
+Setup could make a stranger the owner. Closed by a question the owner answers.
+
+- **Check an existing installation.** Open `chats.json`: every `"principal"`
+  and `"approvers"` id must be yours (your own Telegram id; `@userinfobot`
+  shows it). A wrong one means the old quick setup took a stranger — fix the
+  id by hand or run `setup.py` again.
+- **What it still rests on.** A message written in the 30 s before setup
+  started still counts, and if a stranger is the ONLY one who wrote, the
+  "Is this you?" question is the whole guard: it shows the name and id, and
+  only the person reading it can say no.
 
 - **The owner is confirmed, never assumed.** Quick setup used to make whoever
   wrote to the bot in a private chat FIRST the principal — the person whose
