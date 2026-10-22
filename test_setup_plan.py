@@ -68,6 +68,62 @@ check("with no private message there is nothing to decide", p["ok"] is False)
 p = S.plan_install(BOT, [], SHIPPED)
 check("with nothing at all, no plan", p["ok"] is False)
 
+print("\na stranger who writes too is never made the owner (2026-10-22)")
+STRANGER = 555000111
+both = [private(STRANGER, "Stranger", "en"), private()]
+p = S.plan_install(BOT, both, SHIPPED)
+check("two private writers -> nothing decided", p["ok"] is False and "principal" not in p, str(p))
+check("both come back as candidates, the stranger first as he arrived",
+      [c["uid"] for c in p.get("candidates", [])] == [STRANGER, ME], str(p.get("candidates")))
+p = S.plan_install(BOT, both, SHIPPED, principal=ME)
+check("the chosen person is the principal", p["ok"] and p["principal"] == ME, str(p))
+check("only the chosen person's chat is allowed", list(p["chats"]) == [str(ME)], str(p.get("chats")))
+p = S.plan_install(BOT, both, SHIPPED, principal=123)
+check("a choice nobody made by writing is refused", p["ok"] is False)
+
+print("\nonly messages written NOW count — not the day of undelivered ones")
+import time, types
+now = int(time.time())
+def fake_call(token, method, **kw):
+    if kw.get("offset", 0) == 0:
+        return {"ok": True, "result": [
+            {"update_id": 1, "message": {"date": now - 3600, "chat": {"id": STRANGER, "type": "private"},
+                                         "from": {"id": STRANGER, "first_name": "Stranger"}}},
+            {"update_id": 2, "message": {"date": now, "chat": {"id": ME, "type": "private"},
+                                         "from": {"id": ME, "first_name": "Anna", "username": "anna"}}}]}
+    return {"ok": True, "result": []}
+real_call, real_print = S.call, print
+S.call = fake_call
+import builtins
+builtins.print = lambda *a, **k: None
+try:
+    got = S.wait_for_messages("0:test", seconds=12)
+finally:
+    builtins.print = real_print
+    S.call = real_call
+check("an hour-old message from someone else is not read", [c["chat_id"] for c in got] == [ME],
+      str([c["chat_id"] for c in got]))
+check("the username is kept for the question", got and got[0]["people"][ME].get("username") == "anna")
+
+print("\n'is this you?' — Enter does NOT say yes")
+import tempfile, shutil
+with tempfile.TemporaryDirectory() as td:
+    td = pathlib.Path(td)
+    real_here, real_input = S.HERE, builtins.input
+    answers = iter(["0:test", ""])                    # the token, then Enter at "is this you"
+    S.HERE = td
+    S.get_token = lambda: "0:test"
+    S.call = lambda token, method, **kw: {"ok": True, "result": {"first_name": "Logic", "username": "x_bot"}}
+    S.wait_for_messages = lambda token, seconds=120: [private()]
+    builtins.input = lambda prompt="": next(answers)
+    builtins.print = lambda *a, **k: None
+    try:
+        rc = S.main_quick()
+    finally:
+        builtins.print, builtins.input, S.HERE, S.call = real_print, real_input, real_here, real_call
+    check("Enter at the owner question stops setup", rc == 1, str(rc))
+    check("and nothing is written", not (td / "chats.json").exists() and not (td / "settings.json").exists())
+
 print("\nthe service of ANOTHER directory is never overwritten")
 here = pathlib.Path("/opt/mine")
 check("no unit yet -> ours to write", S.unit_conflict(None, here) is False)

@@ -2,6 +2,29 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.2.3 — 2026-10-22
+
+Setup could make a stranger the owner. Fixed.
+
+- **The owner is confirmed, never assumed.** Quick setup used to make whoever
+  wrote to the bot in a private chat FIRST the principal — the person whose
+  word is an order and whose mark approves — and said nothing about who that
+  was. A bot's name can be guessed or scanned, and Telegram keeps undelivered
+  messages for a day, which setup read before anything new. A stand with a
+  stranger writing first made the stranger the principal and left the owner's
+  own chat off the allowed list. Now: only messages written after setup starts
+  count (a 30 s allowance for clock skew); with more than one private writer
+  setup lists them and asks which one is you; and before anything is written
+  it asks "The owner will be <name> (Telegram id …). Is this you?" — Enter is
+  a no. `setup.py --advanced`, which asks for the id, was not affected.
+  `setup.py` sha256 abb6e1c3444a…; stand: `test_setup_plan.py` 38/38, of
+  which 9 checks are new — and they FAIL on the previous `setup.py`, the
+  stranger coming out as principal.
+- **README: the token.** "The assistant never sees it" was a convention stated
+  as a wall. Owner-only file permissions stop other users, not an assistant
+  running as the same user; the README now says so and names the remedy (a
+  separate account for the bridge).
+
 ## v2.2.2 — 2026-10-22
 
 A correction to v2.2.1's own text, no change in behaviour. v2.2.1 said a

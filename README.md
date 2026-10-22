@@ -20,8 +20,10 @@ transcribed. Everything except that one feature runs on the standard library.
                     ↓
     Telegram ← outbox/*.json  ← the assistant
 
-**The bridge holds the token; the assistant never sees it.** The assistant
-reads files and writes files. If it gets something wrong, it gets it wrong in
+**The bridge holds the token; the assistant does not use it.** The assistant
+reads files and writes files. That is a division of work, not a wall: run as
+the same system user as the bridge, the assistant COULD read `token.txt`.
+Keeping it out needs a separate user (see Security below). If it gets something wrong, it gets it wrong in
 a file rather than in someone else's chat.
 
 Three things run whether or not the assistant is awake: receiving and logging,
@@ -39,7 +41,12 @@ the 👀 "recognised" mark, and **reminders**. Replies need the assistant.
 
    Paste the token when asked, then send your bot any message in Telegram.
    Setup takes the rest from that message — who you are, which language you
-   use — writes its files, checks everything with `doctor.py`, and on Linux
+   use. Only messages written after setup starts count, and before anything
+   is written it asks **"The owner will be <name> (Telegram id …). Is this
+   you?"** — Enter is not a yes. If more than one person wrote, it lists them
+   and asks which one is you. (The owner's word is an order and their mark
+   approves, so a stranger who found the bot's name must not become it.) Then
+   it writes its files, checks everything with `doctor.py`, and on Linux
    offers to start the bridge now and at every boot. It ends with one line:
    `READY`, or exactly what to fix.
 
@@ -312,7 +319,8 @@ Rules without which this rots — the reasoning is in `PROTOCOL.md`:
 ## Security, and what it does not cover
 
 **What holds.** The token lives in one file, tightened to owner-only on every
-start; the assistant never sees it. Chats not in `chats.json` are never read,
+start. Owner-only means the system USER: an assistant running as that same
+user can read it, and only a separate account for the bridge stops that. Chats not in `chats.json` are never read,
 and the filter sits before the write to disk. Approvers are matched by numeric
 id. Nothing is executed on anyone's say-so — the bridge records consent and
 performs no action.

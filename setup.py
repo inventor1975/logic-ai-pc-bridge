@@ -254,12 +254,20 @@ def lang_from(code, shipped) -> str:
     return c if c in shipped else "en"
 
 
-def plan_install(bot: dict, chats: list, shipped) -> dict:
+def plan_install(bot: dict, chats: list, shipped, principal=None) -> dict:
     """What arrived -> settings and chats. No network, no input: the DECISION,
     kept apart from the talking so it can be tested.
 
-    The principal is whoever wrote to the bot in a PRIVATE chat first. A person
-    setting up their own bot writes to it; nobody else knows it exists yet.
+    The principal is the person who wrote to the bot in a PRIVATE chat — and
+    ONLY when that is one person. "Nobody else knows it exists yet" was the old
+    assumption, and it was wrong in a way that cost everything: on 2026-10-22 a
+    stand with a stranger writing first made the STRANGER the principal (whose
+    word is an order and whose mark approves) and left the owner's own chat
+    off the allowed list. A bot's name can be guessed or scanned, and Telegram
+    keeps undelivered messages for a day. So: with more than one private writer
+    nothing is decided here — the candidates come back and the person picks
+    (`principal=` names the choice); and main_quick asks "is this you?" before
+    anything is written.
 
     Groups are NEVER allowed silently. Recording a room is a decision about other
     people, so a group comes back as a question — and only a group the principal
@@ -267,8 +275,17 @@ def plan_install(bot: dict, chats: list, shipped) -> dict:
     private = [c for c in chats if c.get("kind") == "private" and c.get("people")]
     if not private:
         return {"ok": False, "why": "no private message arrived"}
-    first = private[0]
-    uid, person = next(iter(first["people"].items()))
+    writers = [(u, person, c) for c in private for u, person in c["people"].items()]
+    if principal is not None:
+        writers = [w for w in writers if int(w[0]) == int(principal)]
+        if not writers:
+            return {"ok": False, "why": "the chosen person did not write"}
+    elif len({int(w[0]) for w in writers}) > 1:
+        return {"ok": False, "why": "more than one person wrote",
+                "candidates": [{"uid": int(u), "name": person.get("name") or "?",
+                                "username": person.get("username")}
+                               for u, person, _ in writers]}
+    uid, person, first = writers[0]
     name = bot.get("first_name") or "Logic"
     operator = person.get("name") or "the operator"
     settings = {"bot_name": name, "operator": operator,
@@ -297,6 +314,11 @@ def wait_for_messages(token: str, seconds: int = 120) -> list:
     message IS the signal that the person has done it."""
     print("\nNow write any message to your bot in Telegram. Waiting", end="", flush=True)
     seen, offset, deadline, first_private = {}, 0, time.time() + seconds, None
+    # ONLY WHAT IS WRITTEN NOW. Telegram keeps undelivered messages for a day and
+    # getUpdates hands them over first, so without this a message sent to the bot
+    # BEFORE setup — by anyone who found its name — would be read as the owner's.
+    # The slack covers a clock that is a little off from Telegram's.
+    started = time.time() - 30
     while time.time() < deadline:
         r = call(token, "getUpdates", offset=offset, timeout=5,
                  allowed_updates=json.dumps(["message", "channel_post"]))
@@ -304,7 +326,7 @@ def wait_for_messages(token: str, seconds: int = 120) -> list:
             offset = upd["update_id"] + 1
             msg = upd.get("message") or upd.get("channel_post") or {}
             chat, frm = msg.get("chat") or {}, msg.get("from") or {}
-            if not chat.get("id"):
+            if not chat.get("id") or msg.get("date", 0) < started:
                 continue
             c = seen.setdefault(chat["id"], {
                 "chat_id": chat["id"], "kind": chat.get("type"),
@@ -314,6 +336,7 @@ def wait_for_messages(token: str, seconds: int = 120) -> list:
             if frm.get("id") and not frm.get("is_bot"):
                 c["people"].setdefault(frm["id"], {
                     "name": frm.get("first_name") or frm.get("username") or "?",
+                    "username": frm.get("username"),
                     "lang": frm.get("language_code")})
             if chat.get("type") == "private" and first_private is None:
                 first_private = time.time()
@@ -439,10 +462,31 @@ def main_quick() -> int:
     bot = me["result"]
     print(f"Connected: @{bot.get('username')}")
 
-    plan = plan_install(bot, wait_for_messages(token), SHIPPED)
+    arrived = wait_for_messages(token)
+    plan = plan_install(bot, arrived, SHIPPED)
+    if not plan["ok"] and plan.get("candidates"):
+        print("\nMore than one person wrote to the bot in a private chat:")
+        for i, c in enumerate(plan["candidates"], 1):
+            at = f" @{c['username']}" if c.get("username") else ""
+            print(f"  {i}. {c['name']}{at}  (id {c['uid']})")
+        got = ask("Which one is YOU? Number, or Enter to stop")
+        if not got.isdigit() or not 1 <= int(got) <= len(plan["candidates"]):
+            print("\nStopped — nothing written.")
+            return 1
+        plan = plan_install(bot, arrived, SHIPPED,
+                            principal=plan["candidates"][int(got) - 1]["uid"])
     if not plan["ok"]:
         print("\nNo message reached the bot in two minutes.")
         print("Write to it in Telegram — any word — and run setup again.")
+        return 1
+    # THE ONE QUESTION THAT GUARDS EVERYTHING. The principal's word is an order
+    # and their mark approves; a wrong person here is a wrong owner. Enter does
+    # NOT answer it: the default is no, so only a typed "y" makes it so.
+    owner = plan["settings"]["operator"]
+    if not yes(f"\nThe owner will be {owner} (Telegram id {plan['principal']}). "
+               f"Is this you", False):
+        print("\nStopped — nothing written. Write to the bot from your own account "
+              "and run setup again.")
         return 1
     for g in plan["groups"]:
         if yes(f"\nAlso work in the group «{g['title']}»? It records that room "
