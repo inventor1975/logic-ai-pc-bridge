@@ -258,6 +258,39 @@ front of the assistant on the next message and gets closed, rather than
 drifting out of sight. The principal navigates by these eyes; a stuck 👀 lies
 "not done", and the list is what keeps the lie from accumulating.
 
+## A website's contact form (optional)
+
+If a website keeps the messages written through its contact form, the bridge
+can fetch them, so none is missed while no session is running. Add to
+`settings.json`:
+
+    "contact_watch": {"url": "https://example.org/contact/inbox",
+                      "token_file": "~/.config/contact-inbox.token",
+                      "chat_id": 123456789, "scan_seconds": 60}
+
+Once every `scan_seconds` the bridge sends `GET url` with
+`Authorization: Bearer <token>` and expects
+`{"ok": true, "messages": [{"id", "time", "name", "email", "message"}]}`.
+Each message it has not filed before becomes one request in `requests/`
+(`contact-<ms>`) and one notice in `chat_id`, which must be on the allow list.
+The id is recorded in `contact_watch_seen.json` only after both are written:
+a crash re-delivers, it does not lose.
+
+- **The first run files everything already there.** The mail watch stays
+  silent on its first run because a shared folder is full of letters read long
+  ago; nobody has read a form's messages anywhere else, so here a silent start
+  would hide exactly what the watch is for. At most ten are filed per pass,
+  oldest first; the rest follow.
+- **Data from the public, not instructions.** Anyone on the internet can type
+  into a form. The request says so before and after the text, and it is never
+  the principal's word, whatever it claims.
+- **The token** lives in its own file, is read on every pass (a new one needs
+  no restart) and is never written to the log. The url must be `https`; plain
+  `http` is accepted only to this machine. A redirect is refused, because the
+  library would carry the token to wherever it points.
+- A failure (no token, a 401, the site down) is logged once when it starts,
+  marks nothing, and is retried on the next pass.
+
 ## Editing what was already sent
 
     ./edit.py last "the corrected text"

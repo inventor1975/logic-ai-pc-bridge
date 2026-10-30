@@ -455,6 +455,35 @@ MAILWATCH_STATE = ROOT / "mail_watch_seen.json"  # what was shown; do not call t
 # heading is generic and the bridge works exactly as before.
 MAILWATCH_LABEL = str(_MW.get("label") or T("mail.label"))
 
+# A WEBSITE'S CONTACT FORM — THE SAME GUARANTEE AS THE MAIL WATCH. The operator,
+# 2026-10-30: a message written through the form must never be missed and must
+# be read; and it hangs on the bridge, which already runs as a service, rather
+# than on a process of its own. The site keeps the messages; the bridge asks for
+# them once a minute with a bearer token and files each new one in requests/
+# (for the assistant) and in the outbox (for a person, in chat_id).
+# THE TOKEN LIVES IN ITS OWN FILE, named here, never in settings.json and never
+# in a log: settings get pasted into bug reports, a token file does not. With no
+# contact_watch key the watch says nothing and the bridge works exactly as before.
+#
+#   "contact_watch": {"url": "https://example.org/contact/inbox",
+#                     "token_file": "~/.config/contact-inbox.token",
+#                     "chat_id": 123456789, "scan_seconds": 60}
+#
+# The server's answer: {"ok": true, "messages": [{"id", "time", "name",
+# "email", "message"}, ...]}, oldest first; 401 on a wrong token.
+_CW = _S.get("contact_watch") or {}
+CONTACTWATCH_URL = str(_CW.get("url") or "").strip()
+CONTACTWATCH_TOKEN_FILE = (Path(str(_CW.get("token_file"))).expanduser()
+                           if _CW.get("token_file") else None)
+try:
+    CONTACTWATCH_CHAT = int(_CW.get("chat_id")) if _CW.get("chat_id") is not None else None
+except (TypeError, ValueError):
+    print(f"WARNING: contact_watch.chat_id is not a number ({_CW.get('chat_id')!r}) — "
+          f"contact messages will reach the queue only, not a chat")
+    CONTACTWATCH_CHAT = None
+CONTACTWATCH_SCAN = max(10.0, float(_CW.get("scan_seconds", 60.0)))  # once a minute
+CONTACTWATCH_STATE = ROOT / "contact_watch_seen.json"  # ids already filed: do not file twice
+
 # HOW MANY BYTES WE AGREE TO TAKE FROM SOMEONE ELSE'S MACHINE. Checked against
 # Telegram's metadata BEFORE downloading, so a large file costs one API call
 # rather than disk. Twenty megabytes is the Bot API's own getFile ceiling: to

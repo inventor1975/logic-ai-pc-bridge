@@ -61,5 +61,13 @@
   },
 
   "_12_request_hooks": "External programs the bridge TELLS that a request appeared in requests/ — to ring a bell, wake a session, write a log. Unlike a handler it owns nothing and never speaks in the chat. The bridge lists requests/ once a second and runs each hook with one JSON object on stdin: {event: new_requests | bridge_started, requests: [{name, chat_id, file}], bridge}. Output is ignored; a failure is logged and the request stays in the queue. Shape: {\"run\": [\"touch\", \"~/bridge/.doorbell\"], \"timeout_seconds\": 10}.",
-  "on_request": []
+  "on_request": [],
+
+  "_13_contact_watch": "Optional: a website's contact form. Once every scan_seconds the bridge GETs url with the header Authorization: Bearer <the contents of token_file> and expects {\"ok\": true, \"messages\": [{\"id\", \"time\", \"name\", \"email\", \"message\"}]}. Every message not seen before is filed in requests/ as contact-<ms> (marked as data from the public, never the principal's word) and announced in chat_id, which must be on the allow list. The FIRST run files every message already there: unlike the mail watch it is not silent, because nobody else has read them. The token is read from its own file and never written to the log; url must be https (plain http only to localhost). Remove this block entirely if you do not need it.",
+  "contact_watch": {
+    "url": "https://example.org/contact/inbox",
+    "token_file": "~/.config/contact-inbox.token",
+    "chat_id": 123456789,
+    "scan_seconds": 60
+  }
 }

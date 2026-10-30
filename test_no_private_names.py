@@ -32,6 +32,7 @@ SELF = pathlib.Path(__file__).name
 # holding what it is supposed to hold — found 2026-09-10 rehearsing a rollout.
 DATA = {"chats.json", "settings.json", "grants.json", "rules.json", "token.txt",
         "mailwatch_seen.json", "mail_watch_seen.json", "arkady_seen.json",
+        "contact_watch_seen.json",
         "approved_manifest.json", "drift_refusals.jsonl"}
 
 COPYRIGHT = re.compile(r"Copyright \d{4} Vitaly Reznik")

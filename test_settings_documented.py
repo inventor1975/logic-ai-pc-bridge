@@ -32,6 +32,11 @@ def keys_read(code: str):
     sub |= set(re.findall(r'_mw_path\(\s*"([^"]+)"', code))
     return top, sub
 
+
+def contact_keys_read(code: str):
+    """contact_watch sub-keys, exactly as the code reads them."""
+    return set(re.findall(r'_CW\.get\(\s*"([^"]+)"', code))
+
 code = (HERE / "config.py").read_text(encoding="utf-8")
 top, sub = keys_read(code)
 ex = json.loads((HERE / "settings.json.example").read_text(encoding="utf-8"))
@@ -46,6 +51,15 @@ miss_sub = sorted(sub - ex_sub)
 check("every mail_watch sub-key is in the example", not miss_sub,
       f"{len(miss_sub)} undocumented: {', '.join(miss_sub)}")
 
+csub = contact_keys_read(code)
+ex_csub = set((ex.get("contact_watch") or {}))
+miss_c = sorted(csub - ex_csub)
+check("every contact_watch sub-key is in the example", not miss_c,
+      f"{len(miss_c)} undocumented: {', '.join(miss_c)}")
+stale_c = sorted(ex_csub - csub)
+check("the example's contact_watch promises nothing the code does not read", not stale_c,
+      f"{len(stale_c)} stale: {', '.join(stale_c)}")
+
 stale = sorted(ex_top - top)
 check("the example promises nothing the code does not read", not stale,
       f"{len(stale)} stale: {', '.join(stale)}")
@@ -55,6 +69,8 @@ t, s = keys_read('x = _S.get("alpha", 1)\ny = _MW.get("beta")\nz = _mw_path("gam
 check("CONTROL: the parse finds a top-level key", t == {"alpha"})
 check("CONTROL: the parse finds a sub-key via _MW.get", "beta" in s)
 check("CONTROL: the parse finds a sub-key via _mw_path", "gamma" in s)
+check("CONTROL: the parse finds a contact_watch sub-key via _CW.get",
+      contact_keys_read('u = _CW.get("delta")') == {"delta"})
 check("CONTROL: a missing key is caught", bool({"alpha"} - set()))
 check("CONTROL: the example parses as JSON", isinstance(ex, dict) and bool(ex))
 

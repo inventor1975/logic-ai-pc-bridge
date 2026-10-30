@@ -2,6 +2,50 @@
 
 The digest in every line is taken from the file, not from the intention.
 
+## v2.3.0 — 2026-10-30
+
+A new capability: the bridge watches a website's contact form.
+
+- **`contact_watch` (optional, in `settings.json`).** The operator, 2026-10-30:
+  a message written through the form must never be missed and must be read,
+  and the watch hangs on the bridge, which already runs as a service, rather
+  than on a process of its own. Once every `scan_seconds` (default 60) the
+  bridge sends `GET url` with `Authorization: Bearer <token_file's contents>`
+  and expects `{"ok": true, "messages": [{id, time, name, email, message}]}`.
+  Each message not filed before becomes ONE request (`contact-<ms>`, chat_id
+  None, not from the principal) and ONE notice in `chat_id`; the id goes into
+  `contact_watch_seen.json` only after both are written — a crash re-delivers,
+  it does not lose. Without the key nothing changes.
+- **The first run is not silent**, unlike the mail watch's: a shared folder is
+  full of letters read long ago, but nobody has read a form's messages anywhere
+  else, so a silent start would mark as read exactly what the watch is for. The
+  flood is bounded instead: at most 10 per pass, oldest first, the rest on the
+  next pass.
+- **Data from the public, not instructions.** The request carries
+  `contact.public_data` before and after the message: anyone on the internet
+  can write it, and it is never the principal's word.
+- **The token** is read from its own file on every pass and never printed; a
+  string carrying it is scrubbed before it is logged. The url must be `https`
+  (plain `http` only to this machine), and a redirect is refused, because
+  urllib carries the Authorization header to wherever a redirect points.
+- **Its own thread, started after the tamper watch.** A fetch may wait 20 s for
+  a server that does not answer; on the pump's thread that would hold every
+  reply in the outbox behind it. A failure (no token, 401, network, a malformed
+  answer) is logged once per change of condition and marks nothing.
+- A notice longer than 3000 characters is cut in the chat, with a note naming
+  the request that keeps the whole text. New messages `contact.label`,
+  `contact.public_data`, `contact.header`, `contact.truncated` in all seven
+  locales (uk/he/de/fr/es not checked by a native speaker).
+- `test_settings_documented.py` now checks `contact_watch` sub-keys both ways.
+
+`tg_bridge.py` sha256 2a03a04a272c…, `config.py` edf89814e2fc…; stand:
+`test_contact_watch.py` 26/26 (first run delivers all, a second pass nothing,
+a new id one, 401 and a dead site deliver and mark nothing and are said once,
+write-then-mark, the cut, the per-pass cap, the refused redirect and plain
+http, the token in no log, request, notice or state file). Four mutants — mark
+before writing, a silent first run, following redirects, printing the token —
+each turn it RED. Whole suite 36/36.
+
 ## v2.2.4 — 2026-10-22
 
 Two lines the v2.2.3 entry owed its reader, added there: how to check an

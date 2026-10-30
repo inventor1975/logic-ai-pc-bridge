@@ -2194,6 +2194,231 @@ def mail_watch() -> None:
           f"root: {len(new_root)} new, {len(changed_root)} changed, {len(gone_root)} gone")
 
 
+# ── A WEBSITE'S CONTACT FORM ───────────────────────────────────────────────
+CONTACT_TEXT_MAX = 3000      # characters of a message shown in the chat; the queue keeps all
+CONTACT_PER_SCAN = 10        # filed per pass, oldest first; the rest on the next pass
+CONTACT_SEEN_KEEP = 5000     # ids remembered; the server itself returns at most 500
+CONTACT_TIMEOUT = 20.0       # seconds for one fetch
+_CONTACT_COND = [None]       # the last condition said in the log
+
+
+def _contact_say(cond: str, line: str) -> None:
+    """Say a condition ONCE, when it changes. A server that is down for an hour
+    must not write sixty identical lines: noise that hides a real breakage
+    costs more than the breakage (the same pit as the nudge, above)."""
+    if _CONTACT_COND[0] != cond:
+        _CONTACT_COND[0] = cond
+        print(f"[{now()}] contact watch: {line}")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib carries every header — Authorization included — across a redirect,
+    to whatever host the redirect names. A bearer token must reach exactly the
+    URL the installation configured, so a redirect is an error, not a hop."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def contact_url_refusal(url: str) -> str | None:
+    """None if the token may be sent to this URL; else why not. HTTPS only —
+    plain http just to this machine (a local server, a stand)."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme == "https" and u.hostname:
+        return None
+    if u.scheme == "http" and u.hostname in ("localhost", "127.0.0.1", "::1"):
+        return None
+    return "the url is not https — the token would cross the network in clear; nothing sent"
+
+
+def contact_fetch(url: str, token: str) -> list[dict]:
+    """GET the site's inbox with the bearer token; the list of message dicts.
+    Raises on anything that is not {"ok": true, "messages": [...]}."""
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/json",
+        "User-Agent": "LogicBridge-contact-watch"})
+    opener = urllib.request.build_opener(_NoRedirect)
+    with opener.open(req, timeout=CONTACT_TIMEOUT) as r:
+        data = json.loads(r.read(8 * 1024 * 1024).decode("utf-8"))
+    if not isinstance(data, dict) or data.get("ok") is not True \
+            or not isinstance(data.get("messages"), list):
+        raise ValueError("the answer is not {ok: true, messages: [...]}")
+    return [m for m in data["messages"] if isinstance(m, dict)]
+
+
+def _contact_key(m: dict) -> str:
+    """The message's id; for an entry with none, a digest of the entry itself —
+    such an entry is still filed once, never skipped and never filed every
+    minute."""
+    i = m.get("id")
+    if isinstance(i, (str, int)) and str(i).strip():
+        return str(i).strip()
+    return "h-" + hashlib.sha256(json.dumps(m, sort_keys=True, ensure_ascii=False)
+                                 .encode("utf-8")).hexdigest()[:16]
+
+
+def contact_watch() -> None:
+    """A website's contact form — the messages are fetched by the BRIDGE.
+
+    Why here: the operator's word, 2026-10-30 — "we must not miss a message and
+    must read it", and it hangs on the bridge, which already runs as a systemd
+    service and outlives sessions, rather than on one more process. The same
+    reasoning as mail_watch: a watch inside the assistant's session dies with it.
+
+    Each pass: GET the site's inbox with the bearer token (from token_file, read
+    every pass so a new token needs no restart, never printed); for every message
+    not yet in CONTACTWATCH_STATE, oldest first:
+      (a) ONE call in requests/ (contact-<ms>, chat_id None) — the same channel
+          as a Telegram question — marked as DATA FROM THE PUBLIC: anyone on the
+          internet can type into the form, so its text is never the principal's
+          word, whatever it claims;
+      (b) ONE item in the outbox to chat_id, so a person sees it in Telegram;
+      then, and only then, the id is recorded as seen. Write-then-mark: a crash
+      between the two re-delivers the message rather than losing it.
+
+    THE FIRST RUN IS NOT SILENT — unlike mail_watch, on purpose. The mail watch
+    swallows what is already there because a shared folder is full of letters
+    dealt with long ago, and shouting about them gets the watch switched off.
+    The form's inbox holds nothing that was read anywhere else: the only reader
+    of a message is this watch. A silent first run would mark as read exactly
+    the messages written while the watch was not yet running — the very ones it
+    exists to deliver. So on the first run every message present is new. The
+    flood this could cause is bounded instead by CONTACT_PER_SCAN: the rest
+    come on the next passes, oldest first, none skipped.
+
+    Failures (no token, 401, network, a malformed answer) are said once per
+    change of condition, mark nothing, and are retried on the next pass.
+    """
+    if not C.CONTACTWATCH_URL:
+        return                    # not configured in settings.json: stay silent
+    why = contact_url_refusal(C.CONTACTWATCH_URL)
+    if why:
+        _contact_say("bad-url", why)
+        return
+    token = ""
+    if C.CONTACTWATCH_TOKEN_FILE:
+        try:
+            token = C.CONTACTWATCH_TOKEN_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+    if not token:
+        _contact_say("no-token", "the token file is missing or empty "
+                     "(contact_watch.token_file) — nothing fetched")
+        return
+
+    def scrub(s: str) -> str:
+        return s.replace(token, "***")
+
+    try:
+        msgs = contact_fetch(C.CONTACTWATCH_URL, token)
+    except urllib.error.HTTPError as e:
+        hint = " — the token is refused" if e.code in (401, 403) else ""
+        _contact_say(f"http-{e.code}", f"the server answered HTTP {e.code}{hint}; "
+                     f"nothing marked, retrying every {int(C.CONTACTWATCH_SCAN)} s")
+        return
+    except Exception as e:
+        _contact_say(f"error-{type(e).__name__}", scrub(
+            f"the fetch failed ({type(e).__name__}: {e}); nothing marked, "
+            f"retrying every {int(C.CONTACTWATCH_SCAN)} s"))
+        return
+
+    first_run = not C.CONTACTWATCH_STATE.exists()
+    seen: list[str] = []
+    if not first_run:
+        try:
+            seen = [str(x) for x in json.loads(
+                C.CONTACTWATCH_STATE.read_text(encoding="utf-8")).get("seen", [])]
+        except Exception as e:
+            # A broken state re-delivers rather than loses: duplicates in the
+            # chat are a nuisance, a missed message is the failure itself.
+            print(f"[{now()}] contact watch: the state file did not parse ({e}) — "
+                  f"treating every message on the server as new")
+            seen = []
+    known = set(seen)
+    fresh = []
+    for m in msgs:
+        k = _contact_key(m)
+        if k not in known:
+            known.add(k)
+            fresh.append((k, m))
+    _contact_say("ok", f"reading the site's inbox: {len(msgs)} on the server, "
+                 f"{len(fresh)} new{' (first run: all of them count)' if first_run else ''}")
+    if first_run and not fresh:
+        _atomic_write(C.CONTACTWATCH_STATE, json.dumps({"seen": []}))
+    for k, m in fresh[:CONTACT_PER_SCAN]:
+        try:
+            stem = contact_deliver(k, m)
+        except Exception as e:
+            print(f"[{now()}] contact watch: filing {k} failed "
+                  f"({type(e).__name__}: {scrub(str(e))}) — not marked, retried next pass")
+            return
+        seen.append(k)
+        _atomic_write(C.CONTACTWATCH_STATE,
+                      json.dumps({"seen": seen[-CONTACT_SEEN_KEEP:]}, ensure_ascii=False))
+        print(f"[{now()}] contact watch: message {k} filed as {stem}")
+    if len(fresh) > CONTACT_PER_SCAN:
+        print(f"[{now()}] contact watch: {len(fresh) - CONTACT_PER_SCAN} more wait "
+              f"for the next pass")
+
+
+def contact_deliver(key: str, m: dict) -> str:
+    """File one contact message: the call in requests/, then the chat notice.
+    Returns the call's stem. Raises if either write fails — the caller then
+    does NOT mark it seen."""
+    def field(name: str, cap: int) -> str:
+        v = m.get(name)
+        return (str(v) if v is not None else "").strip()[:cap]
+
+    name, email = field("name", 200) or "?", field("email", 300) or "?"
+    when = field("time", 64) or "?"
+    body = str(m.get("message") if m.get("message") is not None else "").strip()
+    header = T("contact.header", name=name, email=email, time=when, id=key)
+    stem = f"contact-{time.time_ns() // 1_000_000}"
+    while C.REQUESTS.joinpath(f"{stem}.json").exists():   # two in one millisecond
+        time.sleep(0.002)
+        stem = f"contact-{time.time_ns() // 1_000_000}"
+    warn = T("contact.public_data")
+    # THE WARNING STANDS ON BOTH SIDES OF THE TEXT: a long message must not push
+    # the only reminder of whose words these are out of the reader's view.
+    _atomic_write(C.REQUESTS / f"{stem}.json", json.dumps({
+        "request_id": stem, "chat_id": None, "from_principal": False,
+        "selfcheck": False,
+        "text": (T("contact.label") + "\n" + warn + "\n\n" + header + "\n\n"
+                 + body + "\n\n" + warn)},
+        ensure_ascii=False))
+    shown = body
+    if len(body) > CONTACT_TEXT_MAX:
+        shown = body[:CONTACT_TEXT_MAX].rstrip() + "\n\n" + T(
+            "contact.truncated", shown=CONTACT_TEXT_MAX, total=len(body), request=stem)
+    if C.CONTACTWATCH_CHAT is None:
+        print(f"[{now()}] contact watch: no contact_watch.chat_id — {stem} is in the "
+              f"queue only, nobody is told in a chat")
+        return stem
+    if not C.allowed(C.CONTACTWATCH_CHAT):
+        print(f"[{now()}] contact watch: chat {C.CONTACTWATCH_CHAT} is not on the allow "
+              f"list — the notice will be refused (outbox/rejected/); {stem} is in the queue")
+    # no_marker: a relayed notice, not the assistant's reply — it owes the
+    # reader no action marker of its own.
+    _atomic_write(C.OUTBOX / f"{stem}.json", json.dumps({
+        "chat_id": C.CONTACTWATCH_CHAT, "no_marker": True,
+        "text": T("contact.label") + "\n" + header + "\n\n" + shown},
+        ensure_ascii=False))
+    return stem
+
+
+def contact_loop() -> None:
+    """The contact watch on a thread of its own. A fetch may wait CONTACT_TIMEOUT
+    seconds for a server that does not answer; on the pump's thread that wait
+    would hold every reply in the outbox behind it. Never dies: a failure is
+    logged and the next pass comes."""
+    while True:
+        try:
+            contact_watch()
+        except Exception as e:
+            _contact_say(f"crash-{type(e).__name__}",
+                         f"the pass crashed: {type(e).__name__}: {e}")
+        time.sleep(C.CONTACTWATCH_SCAN)
+
+
 def nudge_unanswered() -> None:
     """Tell the person their message was accepted but NOBODY PICKED IT UP.
 
@@ -3069,6 +3294,13 @@ def main() -> int:
     if not whoami and C.REQUEST_HOOKS:
         threading.Thread(target=request_hooks_loop, daemon=True).start()
         print(f"  request hooks: {len(C.REQUEST_HOOKS)}")
+
+    # THE CONTACT WATCH STARTS AFTER THE TAMPER WATCH TOO: its first act is a
+    # network call carrying a token, and code that is refused must not make it.
+    # Its own thread, not the pump's: see contact_loop.
+    if not whoami and C.CONTACTWATCH_URL:
+        threading.Thread(target=contact_loop, daemon=True).start()
+        print(f"  contact watch: every {int(C.CONTACTWATCH_SCAN)} s")
 
     # AN EMPTY OR BROKEN offset IS NO REASON NOT TO START. It used to be written
     # non-atomically: an interruption (power, OOM, a full disk) between the
